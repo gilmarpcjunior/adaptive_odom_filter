@@ -1,0 +1,61 @@
+<launch>
+
+  <!-- arguments -->
+  <arg name="filter"          value="true" />
+  <arg name="cov"             value="true" />
+
+  <!-- Inputs adapted to the script's topics -->
+  <arg name="imu"             value="/imu/data" />
+  <arg name="lidar_slam_odom" value="/lidar/odom" />
+  <arg name="tracking_camera" value="/camera/odom" />
+  <!-- No separate visual SLAM odom from the script -->
+  <!-- <arg name="visual_slam_odom" value="/rtabmap/odom" /> -->
+  <arg name="wheel_odom"      value="/wheel/odom" />
+
+  <!-- Unused sensors (commented) -->
+  <!-- <arg name="ptCloud"         value="/os1_cloud_node/points" /> -->
+  <!-- <arg name="stereo_cam_left" value="/t265/fisheye2/image_raw" /> -->
+  <!-- <arg name="stereo_cam_right"value="/t265/fisheye1/image_raw" /> -->
+  <!-- <arg name="color_image"     value="/d435i/color/image_raw" /> -->
+
+  <!-- Outputs (keep or adjust as your downstream expects) -->
+  <arg name="lidar_odom_out"  value="/ekf_loam/laser_odom_to_init_cov" />
+  <arg name="visual_odom_out" value="/visual/odom/sample_cov" />
+  <arg name="wheel_odom_out"  value="/odom_cov" />
+  <!-- <arg name="rtabmap_service" value="/rtabmap/reset_odom_to_pose" /> -->
+
+  <rosparam command="load" file="$(find adaptive_odom_filter)/config/adaptive_filter_parameters.yaml" />
+
+  <!-- OPTIONAL: start the fake publishers here -->
+  <!--
+  <node pkg="your_pkg_name" type="multi_fake_odom_imu_rates.py" name="multi_fake_odom_imu_rates" output="screen">
+    <param name="camera_rate_hz" value="10.0"/>
+    <param name="wheel_rate_hz"  value="20.0"/>
+    <param name="lidar_rate_hz"  value="10.0"/>
+    <param name="imu_rate_hz"    value="200.0"/>
+  </node>
+  -->
+
+  <!-- Filter -->
+  <node if="$(arg filter)" pkg="adaptive_odom_filter" type="EKFAdaptiveFilter" name="EKFAdaptiveFilter" output="screen">
+    <remap from="/imu/data" to="$(arg imu)"/>
+  </node>
+
+  <!-- State Machine -->
+  <node if="$(arg cov)" pkg="adaptive_odom_filter" type="adaptive_covariance" name="adaptive_covariance" output="screen">
+    <remap from="/imu/data"                        to="$(arg imu)"/>
+    <remap from="/ekf_loam/laser_odom_to_initOut"  to="$(arg lidar_slam_odom)"/>
+    <remap from="/t265/odom/sample"                to="$(arg tracking_camera)"/>
+    <!-- <remap from="/rtabmap/odom"                 to="$(arg visual_slam_odom)"/> -->
+    <remap from="/odom"                            to="$(arg wheel_odom)"/>
+    <!-- <remap from="/os1_cloud_node/points"        to="$(arg ptCloud)"/> -->
+    <!-- <remap from="/t265/fisheye2/image_raw"      to="$(arg stereo_cam_left)"/> -->
+    <!-- <remap from="/t265/fisheye1/image_raw"      to="$(arg stereo_cam_right)"/> -->
+    <!-- <remap from="/d435i/color/image_raw"        to="$(arg color_image)"/> -->
+    <remap from="/ekf_loam/laser_odom_to_init_cov" to="$(arg lidar_odom_out)"/>
+    <remap from="/visual/odom/sample_cov"          to="$(arg visual_odom_out)"/>
+    <remap from="/odom_cov"                        to="$(arg wheel_odom_out)"/>
+    <!-- <remap from="/rtabmap/reset_odom_to_pose"   to="$(arg rtabmap_service)"/> -->
+  </node>
+
+</launch>
