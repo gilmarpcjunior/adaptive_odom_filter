@@ -167,7 +167,7 @@ public:
     //------------------
     // filter control
     // -----------------
-    void get_state(&VectorXd X_state, &MatrixXd E_state);
+    void get_state(VectorXd &X_state, MatrixXd &E_state);
 
     void set_initial_state(VectorXd X_state, MatrixXd E_state);
 

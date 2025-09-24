@@ -20,6 +20,7 @@
 
 #include "settings_adaptive_filter.h"
 #include "ekf_adaptive_tools.h"
+#include <rtabmap_msgs/ResetPose.h>
 
 using namespace Eigen;
 using namespace std;
@@ -43,6 +44,10 @@ private:
     ros::Subscriber subWheelOdometry;
     ros::Subscriber subLaserOdometry;
     ros::Subscriber subVisualOdometry;
+    ros::Subscriber subVisualOdometryD;
+    ros::Subscriber subCamLeft;
+    ros::Subscriber subCamRight;
+    ros::Subscriber subCamRgb;
 
     // Publisher
     ros::Publisher pubFilteredOdometry;
@@ -111,9 +116,6 @@ public:
     double alpha_lidar;
     double alpha_visual;
 
-    float wheelG; // delete
-    float imuG;
-
     float lidarG;
     float visualG;
     float wheelG;
@@ -129,8 +131,6 @@ public:
     int wheel_type_func;
 
     int camera_type;
-
-    std::string filterFreq;
 
     std::string filterFreq;
 
@@ -155,15 +155,6 @@ public:
         lidarTimeCurrent = 0;
         visualTimeCurrent = 0;
         wheelTimeCurrent = 0;
-
-        // auxliar 
-        bias_linear_acceleration.x = 0.0001;
-        bias_linear_acceleration.y = 0.0001;
-        bias_linear_acceleration.z = 0.0001;
-
-        bias_angular_velocity.x = 0.00000001;
-        bias_angular_velocity.y = 0.00000001;
-        bias_angular_velocity.z = 0.00000001;
 
         imu_dt = 0.005;
         wheel_dt = 0.05;
@@ -284,9 +275,6 @@ public:
         tf::Matrix3x3(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w)).getRPY(roll, pitch, yaw);
 
         // measure
-        Eigen::MatrixXd = E_imu(9,9);
-        Eigen::MatrixXd::Zero(9,9);
-
         imuMeasure.block(0,0,3,1) << imuIn->linear_acceleration.x, imuIn->linear_acceleration.y, imuIn->linear_acceleration.z;
         imuMeasure.block(3,0,3,1) << imuIn->angular_velocity.x, imuIn->angular_velocity.y, imuIn->angular_velocity.z; 
         imuMeasure.block(6,0,3,1) << roll, pitch, yaw;
@@ -331,8 +319,6 @@ public:
         } 
 
         // measure
-        Eigen::MatrixXd = E_imu(2,2);
-        Eigen::MatrixXd::Zero(2,2);
         wheelMeasure << -1.0*wheelOdometry->twist.twist.linear.x, wheelOdometry->twist.twist.angular.z;
 
         // covariance
@@ -348,7 +334,7 @@ public:
         headerW.stamp = ros::Time().fromSec(timediff);
 
         // correction stage aqui
-        filter.correction_imu_data(wheelMeasure, E_wheel, wheel_dt, imuMeasure(5));
+        filter.correction_wheel_data(wheelMeasure, E_wheel, wheel_dt, imuMeasure(5));
     }
 
     void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr& laserOdometry){
@@ -369,8 +355,6 @@ public:
         tf::Matrix3x3(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w)).getRPY(roll, pitch, yaw);
 
         // measure
-        Eigen::MatrixXd = E_imu(6,6);
-        Eigen::MatrixXd::Zero(6,6);
         lidarMeasure.block(0,0,3,1) << laserOdometry->pose.pose.position.x, laserOdometry->pose.pose.position.y, laserOdometry->pose.pose.position.z;
         lidarMeasure.block(3,0,3,1) << roll, pitch, yaw;    
 
@@ -435,7 +419,6 @@ public:
 
             // time
             visual_dt = visualTimeCurrent - visualTimeLast;
-            // visual_dt = 0.05;
 
             // header
             double timediff = ros::Time::now().toSec() - timeV + visualTimeCurrent;
@@ -443,9 +426,10 @@ public:
             headerV.stamp = ros::Time().fromSec(timediff);
             
             // compute average intensity
-            
+            averageIntensity = (averageIntensity1 + averageIntensity2)/2;
+
             //New measure
-            filter.correction_visual_data(visual_odom, E_visual, dt, averageIntensity);
+            filter.correction_visual_data(visualMeasure, E_visual, visual_dt, averageIntensity);
         }
     }
 
@@ -456,12 +440,12 @@ public:
             if (visualOdometry->pose.covariance[0] >= 9999.0 && visualOdometry->pose.pose.position.x == 0 && visualOdometry->pose.pose.position.y == 0 && visualOdometry->pose.pose.position.z == 0){
                 // reset pose 
                 rtabmap_msgs::ResetPose poseRgb;
-                poseRgb.request.x = visualOdometryOut.pose.pose.position.x;
-                poseRgb.request.y = visualOdometryOut.pose.pose.position.y;
-                poseRgb.request.z = visualOdometryOut.pose.pose.position.z;
+                poseRgb.request.x = visualOdometry->pose.pose.position.x;
+                poseRgb.request.y = visualOdometry->pose.pose.position.y;
+                poseRgb.request.z = visualOdometry->pose.pose.position.z;
 
                 double roll, pitch, yaw;
-                geometry_msgs::Quaternion orientation = visualOdometryOut.pose.pose.orientation;
+                geometry_msgs::Quaternion orientation = visualOdometry->pose.pose.orientation;
                 tf::Matrix3x3(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w)).getRPY(roll, pitch, yaw);
 
                 poseRgb.request.roll = roll;
@@ -511,7 +495,7 @@ public:
                 headerV.stamp = ros::Time().fromSec(timediff);
                 
                 //New measure
-                visualNew = true;
+                filter.correction_visual_data(visualMeasure, E_visual, visual_dt, averageIntensity);
             }            
         }
     }
@@ -678,21 +662,21 @@ int main(int argc, char** argv)
         nh_.param("/adaptive_filter/alpha_lidar", AF.alpha_lidar, double(0.98));
         nh_.param("/adaptive_filter/alpha_visual", AF.alpha_visual, double(0.98));
 
-        nh_.param("/adaptive_filter/lidarG", AC.lidarG, float(1000));
-        nh_.param("/adaptive_filter/wheelG", AC.wheelG, float(0.05));
-        nh_.param("/adaptive_filter/visualG", AC.visualG, float(0.05));
-        nh_.param("/adaptive_filter/imuG", AC.imuG, float(0.1));
+        nh_.param("/adaptive_filter/lidarG", AF.lidarG, float(1000));
+        nh_.param("/adaptive_filter/wheelG", AF.wheelG, float(0.05));
+        nh_.param("/adaptive_filter/visualG", AF.visualG, float(0.05));
+        nh_.param("/adaptive_filter/imuG", AF.imuG, float(0.1));
 
-        nh_.param("/adaptive_filter/gamma_vx", AC.gamma_vx, float(0.05));
-        nh_.param("/adaptive_filter/gamma_omegaz", AC.gamma_omegaz, float(0.01));
-        nh_.param("/adaptive_filter/delta_vx", AC.delta_vx, float(0.0001));
-        nh_.param("/adaptive_filter/delta_omegaz", AC.delta_omegaz, float(0.00001));
+        nh_.param("/adaptive_filter/gamma_vx", AF.gamma_vx, float(0.05));
+        nh_.param("/adaptive_filter/gamma_omegaz", AF.gamma_omegaz, float(0.01));
+        nh_.param("/adaptive_filter/delta_vx", AF.delta_vx, float(0.0001));
+        nh_.param("/adaptive_filter/delta_omegaz", AF.delta_omegaz, float(0.00001));
 
-        nh_.param("/adaptive_filter/lidar_type_func", AC.lidar_type_func, int(2));
-        nh_.param("/adaptive_filter/visual_type_func", AC.visual_type_func, int(2));
-        nh_.param("/adaptive_filter/wheel_type_func", AC.wheel_type_func, int(1));
+        nh_.param("/adaptive_filter/lidar_type_func", AF.lidar_type_func, int(2));
+        nh_.param("/adaptive_filter/visual_type_func", AF.visual_type_func, int(2));
+        nh_.param("/adaptive_filter/wheel_type_func", AF.wheel_type_func, int(1));
 
-        nh_.param("/adaptive_filter/camera_type", AC.camera_type, int(0));
+        nh_.param("/adaptive_filter/camera_type", AF.camera_type, int(0));
     }
     catch (int e)
     {

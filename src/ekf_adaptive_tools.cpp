@@ -23,7 +23,7 @@ AdaptiveFilter::AdaptiveFilter(){
 
     // initialization
     initialization();
-    covariance_initialization()
+    covariance_initialization();
 }
 
 AdaptiveFilter::~AdaptiveFilter() {
@@ -61,7 +61,7 @@ void AdaptiveFilter::allocateMemory(){
 
 void AdaptiveFilter::initialization(){
     // times and frequencies
-    _imu_dt = 0.0005
+    _imu_dt = 0.0005;
     _wheel_dt = 0.05;
     _lidar_dt = 0.1;
     _visual_dt = 0.005;
@@ -296,7 +296,7 @@ void AdaptiveFilter::correction_visual_stage(double dt){
     Eigen::MatrixXd H(_N_VISUAL,_N_STATES); 
 
     // measure model
-    hx = X.block(6,0,6,1);
+    hx = _X.block(6,0,6,1);
     // visual measurement
     if (_firstVisual){
         _visualMeasureL = _visualMeasure;
@@ -306,16 +306,13 @@ void AdaptiveFilter::correction_visual_stage(double dt){
 
     // Jacobian of hx with respect to the states
     H = Eigen::MatrixXd::Zero(_N_VISUAL,_N_STATES);
-    H.block(0,6,6,6) = Eigen::MatrixXd::Identity(_N_VISUAL,N_VISUAL);
+    H.block(0,6,6,6) = Eigen::MatrixXd::Identity(_N_VISUAL,_N_VISUAL);
 
     // Error propagation
     G = jacobian_odometry_measurement(_visualMeasure, _visualMeasureL, dt, 'v');
     Gl = jacobian_odometry_measurementL(_visualMeasure, _visualMeasureL, dt, 'v');
 
     Q =  G*_E_visual*G.transpose() + Gl*_E_visualL*Gl.transpose();
-
-    // data publish 
-    publish_indirect_odometry_measurement(Y, Q);
 
     // Kalman's gain
     S = H*_P*H.transpose() + Q;
@@ -438,7 +435,7 @@ MatrixXd AdaptiveFilter::jacobian_state(VectorXd x, double dt){
     f0 = f_prediction_model(x, dt);
 
     double delta = 0.0001;
-    for (size_t i = 0; i < N_STATES; i++){
+    for (size_t i = 0; i < _N_STATES; i++){
         x_plus = x;
         x_plus(i) = x_plus(i) + delta;
 
@@ -765,7 +762,7 @@ void AdaptiveFilter::correction_wheel_data(VectorXd wheel_odom, MatrixXd E_wheel
     _wheelNew = true;
 }
 
-void AdaptiveFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar, double dt, int corner, int surf){
+void AdaptiveFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar, double dt, double corner, double surf){
     std::lock_guard<std::mutex> lock(_mutex);
     // activation
     if (!_lidarActivated){
