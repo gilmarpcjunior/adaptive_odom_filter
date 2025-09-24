@@ -19,6 +19,7 @@
 //=======================================================================================================================================
 
 #include "settings_adaptive_filter.h"
+#include "ekf_adaptive_tools.h"
 
 using namespace Eigen;
 using namespace std;
@@ -26,13 +27,12 @@ using namespace std;
 //-----------------------------
 // Global variables
 //-----------------------------
-
 std::mutex mtx; 
 
 //-----------------------------
 // Adaptive EKF class
 //-----------------------------
-class AdaptiveFilter{
+class adaptive_odom_filter{
 
 private:
     // ros node
@@ -46,7 +46,6 @@ private:
 
     // Publisher
     ros::Publisher pubFilteredOdometry;
-    ros::Publisher pubIndLiDARMeasurement;
 
     // header
     std_msgs::Header headerI;
@@ -54,26 +53,15 @@ private:
     std_msgs::Header headerL;
     std_msgs::Header headerV;
 
+    // services
+    ros::ServiceClient srv_client_rgbd;
+
     // TF 
     tf::StampedTransform filteredOdometryTrans;
     tf::TransformBroadcaster tfBroadcasterfiltered;
 
     // filtered odom
     nav_msgs::Odometry filteredOdometry;
-    nav_msgs::Odometry indLiDAROdometry;
-
-    // Measure
-    Eigen::VectorXd imuMeasure, wheelMeasure, lidarMeasure, lidarMeasureL, visualMeasure, visualMeasureL;
-
-    // Measure Covariance
-    Eigen::MatrixXd E_imu, E_wheel, E_lidar, E_lidarL, E_visual, E_visualL, E_pred;
-
-    // States and covariances
-    Eigen::VectorXd X, V;
-    Eigen::MatrixXd P, PV;
-
-    // pose and velocities
-    Eigen::VectorXd pose, velocities;
 
     // Times
     double imuTimeLast;
@@ -91,29 +79,25 @@ private:
     double lidar_dt;
     double visual_dt;
 
-    // imu varibles
-    struct bias bias_linear_acceleration;
-    struct bias bias_angular_velocity;
-
-    // number of state or measure vectors
-    int N_STATES = 12;
-    int N_IMU = 9; 
-    int N_WHEEL = 2; 
-    int N_LIDAR = 6;
-    int N_VISUAL = 6;
-    
     // boolean
     bool imuActivated;
     bool wheelActivated;
     bool lidarActivated;
     bool visualActivated;
-    bool imuNew;
-    bool wheelNew;
-    bool lidarNew;
-    bool visualNew;
-    bool velComp;
-    bool firstVisual;
-    bool firstLidar;
+
+    // adaptive covariance - visual odometry
+    double averageIntensity1;
+    double averageIntensity2;
+    double averageIntensity;
+
+    // filter constructor 
+    AdaptiveFilter filter;
+
+    // Measure
+    Eigen::VectorXd imuMeasure, wheelMeasure, lidarMeasure, visualMeasure;
+
+    // Measure Covariance
+    Eigen::MatrixXd E_imu, E_wheel, E_lidar, E_visual;
 
 public:
     bool enableFilter;
@@ -122,58 +106,44 @@ public:
     bool enableLidar;
     bool enableVisual;
 
+    double freq;
+
     double alpha_lidar;
     double alpha_visual;
 
     float wheelG; // delete
     float imuG;
 
+    float lidarG;
+    float visualG;
+    float wheelG;
+    float imuG;
+
+    float gamma_vx;
+    float gamma_omegaz;
+    float delta_vx;
+    float delta_omegaz;
+
+    int lidar_type_func;
+    int visual_type_func;
+    int wheel_type_func;
+
+    int camera_type;
+
     std::string filterFreq;
 
-    AdaptiveFilter():
+    std::string filterFreq;
+
+    adaptive_odom_filter():
         nh("~")
     {
-        // Subscriber
-        subImu = nh.subscribe<sensor_msgs::Imu>("/imu/data", 50, &AdaptiveFilter::imuHandler, this);
-        subWheelOdometry = nh.subscribe<nav_msgs::Odometry>("/odom_cov", 5, &AdaptiveFilter::wheelOdometryHandler, this);
-        subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/ekf_loam/laser_odom_to_init_cov", 5, &AdaptiveFilter::laserOdometryHandler, this);
-        subVisualOdometry = nh.subscribe<nav_msgs::Odometry>("/visual/odom/sample_cov", 5, &AdaptiveFilter::visualOdometryHandler, this);
-        
-        // Publisher
-        pubFilteredOdometry = nh.advertise<nav_msgs::Odometry> ("/ekf_loam/filter_odom_to_init", 5);
-        pubIndLiDARMeasurement = nh.advertise<nav_msgs::Odometry> ("/indirect_odometry_measurement", 5); // only publish indirect lidar measuremet 
-
         // Initialization
-        allocateMemory();
         initialization();
     }
 
     //------------------
     // Auxliar functions
     //------------------
-    void allocateMemory(){
-        imuMeasure.resize(N_IMU);
-        wheelMeasure.resize(N_WHEEL);
-        lidarMeasure.resize(N_LIDAR);
-        lidarMeasureL.resize(N_LIDAR);
-        visualMeasure.resize(N_VISUAL);
-        visualMeasureL.resize(N_VISUAL);
-
-        E_imu.resize(N_IMU,N_IMU);
-        E_wheel.resize(N_WHEEL,N_WHEEL);
-        E_lidar.resize(N_LIDAR,N_LIDAR);
-        E_lidarL.resize(N_LIDAR,N_LIDAR);
-        E_visual.resize(N_VISUAL,N_VISUAL);
-        E_visualL.resize(N_VISUAL,N_VISUAL);
-        E_pred.resize(N_STATES,N_STATES);
-
-        X.resize(N_STATES);
-        P.resize(N_STATES,N_STATES);
-
-        V.resize(N_STATES);
-        PV.resize(N_STATES,N_STATES);
-    }
-
     void initialization(){
         // times
         imuTimeLast = 0;
@@ -195,6 +165,7 @@ public:
         bias_angular_velocity.y = 0.00000001;
         bias_angular_velocity.z = 0.00000001;
 
+        imu_dt = 0.005;
         wheel_dt = 0.05;
         lidar_dt = 0.1;
         visual_dt = 0.005;
@@ -202,18 +173,14 @@ public:
         alpha_visual = 0.98;
         alpha_lidar = 0.98;
 
+        // filter 
+        freq = 200.0;
+
         // boolean
         imuActivated = false;
         lidarActivated = false;
         wheelActivated = false;
         visualActivated = false;
-
-        imuNew = false;
-        wheelNew = false;
-        lidarNew = false;
-        visualNew = false;
-
-        velComp = false;
 
         enableFilter = false;
         enableImu = false;
@@ -221,467 +188,85 @@ public:
         enableLidar = false;
         enableVisual = false;
 
-        firstVisual =  true;
-        firstLidar = true;
-
         wheelG = 0; // delete
         imuG = 0;
 
-        filterFreq = 'l';
+        // adaptive covariance - visual odometry
+        averageIntensity1 = 0;
+        averageIntensity2 = 0;
+        averageIntensity = 0;
 
-        // matrices and vectors
-        imuMeasure = Eigen::VectorXd::Zero(N_IMU);
-        wheelMeasure = Eigen::VectorXd::Zero(N_WHEEL);
-        lidarMeasure = Eigen::VectorXd::Zero(N_LIDAR);
-        lidarMeasureL = Eigen::VectorXd::Zero(N_LIDAR);
-        visualMeasure = Eigen::VectorXd::Zero(N_VISUAL);
-        visualMeasureL = Eigen::VectorXd::Zero(N_VISUAL);
+        // measure
+        imuMeasure.resize(9);
+        wheelMeasure.resize(2);
+        lidarMeasure.resize(6);
+        visualMeasure.resize(6);
+
+        imuMeasure = Eigen::VectorXd::Zero(9);
+        wheelMeasure = Eigen::VectorXd::Zero(2);
+        lidarMeasure = Eigen::VectorXd::Zero(6);
+        visualMeasure = Eigen::VectorXd::Zero(6);
+
+        E_imu.resize(9,9);
+        E_wheel.resize(2,2);
+        E_lidar.resize(6,6);
+        E_visual.resize(6,6);
+
+        E_imu = Eigen::MatrixXd::Zero(9,9);
+        E_lidar = Eigen::MatrixXd::Zero(6,6);
+        E_visual = Eigen::MatrixXd::Zero(6,6);
+        E_wheel = Eigen::MatrixXd::Zero(2,2);
+    }
+
+    void filter_initialization(){
+        // setting the filter
+        filter.enableImu = enableImu;
+        filter.enableWheel = enableWheel;
+        filter.enableLidar = enableLidar;
+        filter.enableVisual = enableVisual;
+        filter.freq = freq;
+
+        // there are other parameters to set, i.e., the priori state with your covariance matrix
+    }
+
+    void ros_initialization(){
+        // Subscriber
+        subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/ekf_loam/laser_odom_to_initOut", 5, &adaptive_odom_filter::laserOdometryHandler, this);   
+        subWheelOdometry = nh.subscribe<nav_msgs::Odometry>("/odom", 5, &adaptive_odom_filter::wheelOdometryHandler, this);
+        subImu = nh.subscribe<sensor_msgs::Imu>("/imu/data", 50, &adaptive_odom_filter::imuHandler, this);
         
-        E_imu = Eigen::MatrixXd::Zero(N_IMU,N_IMU);
-        E_lidar = Eigen::MatrixXd::Zero(N_LIDAR,N_LIDAR);
-        E_lidarL = Eigen::MatrixXd::Zero(N_LIDAR,N_LIDAR);
-        E_visual = Eigen::MatrixXd::Zero(N_VISUAL,N_VISUAL);
-        E_visualL = Eigen::MatrixXd::Zero(N_VISUAL,N_VISUAL);
-        E_wheel = Eigen::MatrixXd::Zero(N_WHEEL,N_WHEEL);
-        E_pred = Eigen::MatrixXd::Zero(N_STATES,N_STATES);
-
-        // state initial
-        X = Eigen::VectorXd::Zero(N_STATES);
-        P = Eigen::MatrixXd::Zero(N_STATES,N_STATES);
-        V = Eigen::VectorXd::Zero(N_STATES);
-
-        // covariance initial
-        P(0,0) = 0.1;   // x
-        P(1,1) = 0.1;   // y
-        P(2,2) = 0.1;   // z
-        P(3,3) = 0.1;   // roll
-        P(4,4) = 0.1;   // pitch
-        P(5,5) = 0.1;   // yaw
-        P(6,6) = 0.1;   // vx
-        P(7,7) = 0.1;   // vy
-        P(8,8) = 0.1;   // vz
-        P(9,9) = 0.1;   // wx
-        P(10,10) = 0.1;   // wy
-        P(11,11) = 0.1;   // wz
-
-        // Fixed prediction covariance
-        E_pred.block(6,6,6,6) = 0.01*P.block(6,6,6,6);
-
-    }
-
-    //-----------------
-    // predict function
-    //-----------------
-    void prediction_stage(double dt){
-        Eigen::MatrixXd F(N_STATES,N_STATES);
-
-        // jacobian's computation
-        F = jacobian_state(X, dt);
-
-        // Priori state and covariance estimated
-        X = f_prediction_model(X, dt);
-
-        // Priori covariance
-        P = F*P*F.transpose() + E_pred;
-    }
-
-    //-----------------
-    // correction stage
-    //-----------------
-    void correction_wheel_stage(double dt){
-        Eigen::VectorXd Y(N_WHEEL), hx(N_WHEEL);
-        Eigen::MatrixXd H(N_WHEEL,N_STATES), K(N_STATES,N_WHEEL), E(N_WHEEL,N_WHEEL), S(N_WHEEL,N_WHEEL);
-
-        // measure model of wheel odometry (only foward linear velocity)
-        hx(0) = X(6);
-        hx(1) = X(11);
-        // measurement
-        Y = wheelMeasure;
-
-        // Jacobian of hx with respect to the states
-        H = Eigen::MatrixXd::Zero(N_WHEEL,N_STATES);
-        H(0,6) = 1; 
-        H(1,11) = 1;
-
-        // covariance matrices
-        E << E_wheel;
-
-        // Kalman's gain
-        S = H*P*H.transpose() + E;
-        K = P*H.transpose()*S.inverse();
-
-        // correction
-        X = X + K*(Y - hx);
-        P = P - K*H*P;
-    }
-
-    void correction_imu_stage(double dt){
-        Eigen::Matrix3d S, E;
-        Eigen::Vector3d Y, hx;
-        Eigen::MatrixXd H(3,N_STATES), K(N_STATES,3);
-
-        // measure model
-        hx = X.block(3,0,3,1);
-
-        // IMU measurement
-        Y = imuMeasure.block(6,0,3,1); // roll pitch yaw
-
-        // Jacobian of hx with respect to the states
-        H = Eigen::MatrixXd::Zero(3,N_STATES);
-        H.block(0,3,3,3) = Eigen::MatrixXd::Identity(3,3);
-
-        // covariance matrices
-        E = E_imu.block(6,6,3,3);
-
-        // Kalman's gain
-        S = H*P*H.transpose() + E;
-        K = P*H.transpose()*S.inverse();
-
-        // correction - state
-        Eigen::VectorXd residues(3), KR(N_STATES);
-        residues(0) = atan2(sin(Y(0) - hx(0)), cos(Y(0) - hx(0)));
-        residues(1) = atan2(sin(Y(1) - hx(1)), cos(Y(1) - hx(1)));
-        residues(2) = atan2(sin(Y(2) - hx(2)), cos(Y(2) - hx(2)));
-        KR = K*residues;
-
-        X.block(0,0,3,1) = X.block(0,0,3,1) + KR.block(0,0,3,1);
-        X(3) = atan2(sin(X(3) + KR(3)), cos(X(3) + KR(3)));
-        X(4) = atan2(sin(X(4) + KR(4)), cos(X(4) + KR(4)));
-        X(5) = atan2(sin(X(5) + KR(5)), cos(X(5) + KR(5)));
-        X.block(6,0,6,1) = X.block(6,0,6,1) + KR.block(6,0,6,1);
-
-        // X = X + K*(Y - hx); 
-        // correction - covariance
-        P = P - K*H*P;
-    }
-
-    void correction_lidar_stage(double dt){
-        Eigen::MatrixXd K(N_STATES,N_LIDAR), S(N_LIDAR,N_LIDAR), G(N_LIDAR,N_LIDAR), Gl(N_LIDAR,N_LIDAR), Q(N_LIDAR,N_LIDAR);
-        Eigen::VectorXd Y(N_LIDAR), hx(N_LIDAR);
-        Eigen::MatrixXd H(N_LIDAR,N_STATES); 
-
-        // measure model
-        hx = X.block(6,0,6,1);
-        // lidar measurement
-        if (firstLidar){
-            lidarMeasureL = lidarMeasure;
-            E_lidarL = E_lidar;
-            firstLidar = false;
+        if (camera_type==1){
+            subVisualOdometry = nh.subscribe<nav_msgs::Odometry>("/t265/odom/sample", 5, &adaptive_odom_filter::visualOdometryHandler, this);
+            subCamLeft = nh.subscribe<sensor_msgs::Image>("/t265/fisheye2/image_raw", 5, &adaptive_odom_filter::camLeftHandler, this);
+            subCamRight = nh.subscribe<sensor_msgs::Image>("/t265/fisheye1/image_raw", 5, &adaptive_odom_filter::camRightHandler, this);
+        }else if (camera_type==2){
+            subVisualOdometryD = nh.subscribe<nav_msgs::Odometry>("/rtabmap/odom", 5, &adaptive_odom_filter::visualOdometryDHandler, this);
+            subCamRgb = nh.subscribe<sensor_msgs::Image>("/d435i/color/image_raw", 5, &adaptive_odom_filter::camRgbHandler, this);
         }
-        Y = indirect_odometry_measurement(lidarMeasure, lidarMeasureL, dt, 'l');
-
-        // Jacobian of hx with respect to the states
-        H = Eigen::MatrixXd::Zero(N_LIDAR,N_STATES);
-        H.block(0,6,6,6) = Eigen::MatrixXd::Identity(N_LIDAR,N_LIDAR);
-
-        // Error propagation
-        G = jacobian_odometry_measurement(lidarMeasure, lidarMeasureL, dt, 'l');
-        Gl = jacobian_odometry_measurementL(lidarMeasure, lidarMeasureL, dt, 'l');
-
-        Q =  G*E_lidar*G.transpose() + Gl*E_lidarL*Gl.transpose();
-        // Q =  G*E_lidar*G.transpose();
-
-        // data publish 
-        // publish_indirect_odometry_measurement(Y, Q);
-
-        // Kalman's gain
-        S = H*P*H.transpose() + Q;
-        K = P*H.transpose()*S.inverse();
-
-        // correction
-        X = X + K*(Y - hx);
-        P = P - K*H*P;
-
-        // last measurement
-        lidarMeasureL = lidarMeasure;
-        E_lidarL = E_lidar;
-    }
-    
-    void correction_visual_stage(double dt){
-        Eigen::MatrixXd K(N_STATES,N_VISUAL), S(N_VISUAL,N_VISUAL), G(N_VISUAL,N_VISUAL), Gl(N_VISUAL,N_VISUAL), Q(N_VISUAL,N_VISUAL);
-        Eigen::VectorXd Y(N_VISUAL), hx(N_VISUAL);
-        Eigen::MatrixXd H(N_VISUAL,N_STATES); 
-
-        // measure model
-        hx = X.block(6,0,6,1);
-        // visual measurement
-        if (firstVisual){
-            visualMeasureL = visualMeasure;
-            firstVisual = false;
-        }
-        Y = indirect_odometry_measurement(visualMeasure, visualMeasureL, dt, 'v');
-
-        // Jacobian of hx with respect to the states
-        H = Eigen::MatrixXd::Zero(N_VISUAL,N_STATES);
-        H.block(0,6,6,6) = Eigen::MatrixXd::Identity(N_VISUAL,N_VISUAL);
-
-        // Error propagation
-        G = jacobian_odometry_measurement(visualMeasure, visualMeasureL, dt, 'v');
-        Gl = jacobian_odometry_measurementL(visualMeasure, visualMeasureL, dt, 'v');
-
-        Q =  G*E_visual*G.transpose() + Gl*E_visualL*Gl.transpose();
-        // Q =  G*E_lidar*G.transpose();
-
-        // data publish 
-        publish_indirect_odometry_measurement(Y, Q);
-
-        // Kalman's gain
-        S = H*P*H.transpose() + Q;
-        K = P*H.transpose()*S.inverse();
-
-        // correction
-        X = X + K*(Y - hx);
-        P = P - K*H*P;
-
-        // last measurement
-        visualMeasureL = visualMeasure;
-        E_visualL = E_visual;
-    }
-    
-    //---------
-    // Models
-    //---------
-    VectorXd f_prediction_model(VectorXd x, double dt){ 
-        // state: {x, y, z, roll, pitch, yaw, vx, vy, vz, wx, wy, wz}
-        //        {         (world)         }{        (body)        }
-        Eigen::Matrix3d R, Rx, Ry, Rz, J;
-        Eigen::VectorXd xp(N_STATES);
-        Eigen::MatrixXd A(6,6);
-
-        // Rotation matrix
-        Rx = Eigen::AngleAxisd(x(3), Eigen::Vector3d::UnitX());
-        Ry = Eigen::AngleAxisd(x(4), Eigen::Vector3d::UnitY());
-        Rz = Eigen::AngleAxisd(x(5), Eigen::Vector3d::UnitZ());
-        R = Rz*Ry*Rx;
-        
-        // Jacobian matrix
-        J << 1.0, sin(x(3))*tan(x(4)), cos(x(3))*tan(x(4)),
-             0.0, cos(x(3)), -sin(x(3)),
-             0.0, sin(x(3))/cos(x(4)), cos(x(3))/cos(x(4));
-        
-        // model
-        A = Eigen::MatrixXd::Identity(6,6);
-        A.block(0,0,3,3) = R;
-        A.block(3,3,3,3) = J;
-
-        xp.block(0,0,6,1) = x.block(0,0,6,1) + A*x.block(6,0,6,1)*dt;
-        xp.block(6,0,6,1) = x.block(6,0,6,1);
-
-        return xp;
-    }
-
-    VectorXd indirect_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type){
-        Eigen::Matrix3d R, Rx, Ry, Rz, J;
-        Eigen::VectorXd up, u_diff; 
-        Eigen::MatrixXd A; 
-
-        // model
-        switch (type){
-            case 'l':
-                up.resize(N_LIDAR);
-                u_diff.resize(N_LIDAR);
-                A.resize(N_LIDAR,N_LIDAR); 
-                A = Eigen::MatrixXd::Zero(N_LIDAR,N_LIDAR);
-
-                break;
-            case 'v':
-                up.resize(N_VISUAL);
-                u_diff.resize(N_VISUAL);
-                A.resize(N_VISUAL,N_VISUAL); 
-                A = Eigen::MatrixXd::Zero(N_VISUAL,N_VISUAL);
-                
-                break;
             
-            default:
-                break;
-        }
+        // Publisher
+        pubFilteredOdometry = nh.advertise<nav_msgs::Odometry> ("/ekf_loam/filter_odom_to_init", 5);
 
-        // Rotation matrix
-        Rx = Eigen::AngleAxisd(ul(3), Eigen::Vector3d::UnitX());
-        Ry = Eigen::AngleAxisd(ul(4), Eigen::Vector3d::UnitY());
-        Rz = Eigen::AngleAxisd(ul(5), Eigen::Vector3d::UnitZ());
-        R = Rz*Ry*Rx;
-        
-        // Jacobian matrix
-        J << 1.0, sin(ul(3))*tan(ul(4)), cos(ul(3))*tan(ul(4)),
-             0.0, cos(ul(3)), -sin(ul(3)),
-             0.0, sin(ul(3))/cos(ul(4)), cos(ul(3))/cos(ul(4));
-        
-        u_diff.block(0,0,3,1) = (u.block(0,0,3,1) - ul.block(0,0,3,1));
-        u_diff(3) = atan2(sin(u(3) - ul(3)),cos(u(3) - ul(3)));
-        u_diff(4) = atan2(sin(u(4) - ul(4)),cos(u(4) - ul(4)));
-        u_diff(5) = atan2(sin(u(5) - ul(5)),cos(u(5) - ul(5)));
-
-        // model
-         switch (type){
-            case 'l':                
-                u_diff = alpha_lidar*u_diff;
-
-                break;
-            case 'v':
-                u_diff = alpha_visual*u_diff;
-
-                break;
-            
-            default:
-                break;
-        }
-
-        A.block(0,0,3,3) = R.transpose();
-        A.block(3,3,3,3) = J.inverse();
-
-        up = A*u_diff/dt;
-
-        return up;
-
+        // Services
+        srv_client_rgbd = nh.serviceClient<rtabmap_msgs::ResetPose>("/rtabmap/reset_odom_to_pose");
     }
 
-    //----------
-    // Jacobians
-    //----------
-    MatrixXd jacobian_state(VectorXd x, double dt){
-        Eigen::MatrixXd J(N_STATES,N_STATES);
-        Eigen::VectorXd f0(N_STATES), f1(N_STATES), x_plus(N_STATES);
-
-        f0 = f_prediction_model(x, dt);
-
-        double delta = 0.0001;
-        for (size_t i = 0; i < N_STATES; i++){
-            x_plus = x;
-            x_plus(i) = x_plus(i) + delta;
-
-            f1 = f_prediction_model(x_plus, dt);
-           
-            J.block(0,i,N_STATES,1) = (f1 - f0)/delta;       
-            J(3,i) = sin(f1(3) - f0(3))/delta;
-            J(4,i) = sin(f1(4) - f0(4))/delta;
-            J(5,i) = sin(f1(5) - f0(5))/delta; 
-        }
-
-        return J;
+    //------------------
+    // Filter functions
+    //------------------
+    void filter_start(){
+        filter.start();
     }
 
-    MatrixXd jacobian_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type){
-        Eigen::MatrixXd J;
-        Eigen::VectorXd f0(N_LIDAR), f1(N_LIDAR), u_plus(N_LIDAR);
-        double delta;
-
-        switch (type){
-            case 'l':
-                J.resize(N_LIDAR,N_LIDAR);
-                f0.resize(N_LIDAR);
-                f1.resize(N_LIDAR);
-                u_plus.resize(N_LIDAR);
-
-                f0 = indirect_odometry_measurement(u, ul, dt, 'l');
-
-                delta = 0.0000001;
-                for (size_t i = 0; i < N_LIDAR; i++){
-                    u_plus = u;
-                    u_plus(i) = u_plus(i) + delta;
-
-                    f1 = indirect_odometry_measurement(u_plus, ul, dt, 'l');
-                
-                    J.block(0,i,N_LIDAR,1) = (f1 - f0)/delta;       
-                    J(3,i) = sin(f1(3) - f0(3))/delta;
-                    J(4,i) = sin(f1(4) - f0(4))/delta;
-                    J(5,i) = sin(f1(5) - f0(5))/delta; 
-                }
-
-                break;
-            case 'v':
-                J.resize(N_VISUAL,N_VISUAL);
-                f0.resize(N_VISUAL);
-                f1.resize(N_VISUAL);
-                u_plus.resize(N_VISUAL);
-
-                f0 = indirect_odometry_measurement(u, ul, dt, 'v');
-
-                delta = 0.0000001;
-                for (size_t i = 0; i < N_VISUAL; i++){
-                    u_plus = u;
-                    u_plus(i) = u_plus(i) + delta;
-
-                    f1 = indirect_odometry_measurement(u_plus, ul, dt, 'v');
-                
-                    J.block(0,i,N_VISUAL,1) = (f1 - f0)/delta;       
-                    J(3,i) = sin(f1(3) - f0(3))/delta;
-                    J(4,i) = sin(f1(4) - f0(4))/delta;
-                    J(5,i) = sin(f1(5) - f0(5))/delta; 
-                }
-
-                break;
-            
-            default:
-                break;
-        }
-
-        return J;
-    }
-
-    MatrixXd jacobian_odometry_measurementL(VectorXd u, VectorXd ul, double dt, char type){ 
-        Eigen::MatrixXd J;
-        Eigen::VectorXd f0(N_LIDAR), f1(N_LIDAR), ul_plus(N_LIDAR);
-        double delta;
-
-        switch (type){
-            case 'l':
-                J.resize(N_LIDAR,N_LIDAR);
-                f0.resize(N_LIDAR);
-                f1.resize(N_LIDAR);
-                ul_plus.resize(N_LIDAR);
-
-                f0 = indirect_odometry_measurement(u, ul, dt, 'l');
-
-                delta = 0.0000001;
-                for (size_t i = 0; i < N_LIDAR; i++){
-                    ul_plus = ul;
-                    ul_plus(i) = ul_plus(i) + delta;
-
-                    f1 = indirect_odometry_measurement(u, ul_plus, dt, 'l');
-                
-                    J.block(0,i,N_LIDAR,1) = (f1 - f0)/delta;       
-                    J(3,i) = sin(f1(3) - f0(3))/delta;
-                    J(4,i) = sin(f1(4) - f0(4))/delta;
-                    J(5,i) = sin(f1(5) - f0(5))/delta; 
-                }
-
-                break;
-            case 'v':
-                J.resize(N_VISUAL,N_VISUAL);
-                f0.resize(N_VISUAL);
-                f1.resize(N_VISUAL);
-                ul_plus.resize(N_VISUAL);
-
-                f0 = indirect_odometry_measurement(u, ul, dt, 'v');
-
-                delta = 0.0000001;
-                for (size_t i = 0; i < N_VISUAL; i++){
-                    ul_plus = ul;
-                    ul_plus(i) = ul_plus(i) + delta;
-
-                    f1 = indirect_odometry_measurement(u, ul_plus, dt, 'v');
-                
-                    J.block(0,i,N_VISUAL,1) = (f1 - f0)/delta;       
-                    J(3,i) = sin(f1(3) - f0(3))/delta;
-                    J(4,i) = sin(f1(4) - f0(4))/delta;
-                    J(5,i) = sin(f1(5) - f0(5))/delta; 
-                }
-
-                break;
-            
-            default:
-                break;
-        }
-
-        return J;
+    void filter_stop(){
+        filter.stop();
     }
 
     //----------
     // callbacks
     //----------
     void imuHandler(const sensor_msgs::Imu::ConstPtr& imuIn){
-                double timeL = ros::Time::now().toSec();
+        double timeL = ros::Time::now().toSec();
 
         // time
         if (imuActivated){
@@ -699,6 +284,9 @@ public:
         tf::Matrix3x3(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w)).getRPY(roll, pitch, yaw);
 
         // measure
+        Eigen::MatrixXd = E_imu(9,9);
+        Eigen::MatrixXd::Zero(9,9);
+
         imuMeasure.block(0,0,3,1) << imuIn->linear_acceleration.x, imuIn->linear_acceleration.y, imuIn->linear_acceleration.z;
         imuMeasure.block(3,0,3,1) << imuIn->angular_velocity.x, imuIn->angular_velocity.y, imuIn->angular_velocity.z; 
         imuMeasure.block(6,0,3,1) << roll, pitch, yaw;
@@ -725,7 +313,8 @@ public:
         headerI = imuIn->header;
         headerI.stamp = ros::Time().fromSec(timediff);
 
-        imuNew = true;
+        // correction stage aqui
+        filter.correction_imu_data(imuMeasure, E_imu, imu_dt);
     }
 
     void wheelOdometryHandler(const nav_msgs::Odometry::ConstPtr& wheelOdometry){
@@ -742,6 +331,8 @@ public:
         } 
 
         // measure
+        Eigen::MatrixXd = E_imu(2,2);
+        Eigen::MatrixXd::Zero(2,2);
         wheelMeasure << -1.0*wheelOdometry->twist.twist.linear.x, wheelOdometry->twist.twist.angular.z;
 
         // covariance
@@ -750,15 +341,14 @@ public:
 
         // time
         wheel_dt = wheelTimeCurrent - wheelTimeLast;
-        wheel_dt = 0.05;
 
         // header
         double timediff = ros::Time::now().toSec() - timeL + wheelTimeCurrent;
         headerW = wheelOdometry->header;
         headerW.stamp = ros::Time().fromSec(timediff);
 
-        // new measure
-        wheelNew =  true;
+        // correction stage aqui
+        filter.correction_imu_data(wheelMeasure, E_wheel, wheel_dt, imuMeasure(5));
     }
 
     void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr& laserOdometry){
@@ -778,13 +368,13 @@ public:
         geometry_msgs::Quaternion orientation = laserOdometry->pose.pose.orientation;
         tf::Matrix3x3(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w)).getRPY(roll, pitch, yaw);
 
+        // measure
+        Eigen::MatrixXd = E_imu(6,6);
+        Eigen::MatrixXd::Zero(6,6);
         lidarMeasure.block(0,0,3,1) << laserOdometry->pose.pose.position.x, laserOdometry->pose.pose.position.y, laserOdometry->pose.pose.position.z;
         lidarMeasure.block(3,0,3,1) << roll, pitch, yaw;    
 
         // covariance
-        // E_lidar << laserOdometry->pose.covariance[0], laserOdometry->pose.covariance[1], laserOdometry->pose.covariance[2],
-        //            laserOdometry->pose.covariance[3], laserOdometry->pose.covariance[4], laserOdometry->pose.covariance[5],
-        //            laserOdometry->pose.covariance[6], laserOdometry->pose.covariance[7], laserOdometry->pose.covariance[8];
         E_lidar(0,0) = laserOdometry->pose.covariance[0];
         E_lidar(0,1) = laserOdometry->pose.covariance[1];
         E_lidar(0,2) = laserOdometry->pose.covariance[2];
@@ -795,65 +385,206 @@ public:
         E_lidar(2,1) = laserOdometry->pose.covariance[7];
         E_lidar(2,2) = laserOdometry->pose.covariance[8];
 
+        // for adaptive covariance
+        double corner = double(laserOdometry->twist.twist.linear.x);
+        double surf = double(laserOdometry->twist.twist.angular.x);
+
         // time
         lidar_dt = lidarTimeCurrent - lidarTimeLast;
-        // lidar_dt = 0.05;
 
         // header
         double timediff = ros::Time::now().toSec() - timeL + lidarTimeCurrent;
         headerL = laserOdometry->header;
         headerL.stamp = ros::Time().fromSec(timediff);
         
-        //New measure
-        lidarNew = true;
+        // correction stage aqui
+        filter.correction_lidar_data(lidarMeasure, E_lidar, lidar_dt, corner, surf); // parei aqui. adicionar flag para publicação??
     }
 
     void visualOdometryHandler(const nav_msgs::Odometry::ConstPtr& visualOdometry){
-        double timeV = ros::Time::now().toSec();
+        if (camera_type == 1){ 
+            double timeV = ros::Time::now().toSec();
 
-        if (visualActivated){
-            visualTimeLast = visualTimeCurrent;
-            visualTimeCurrent = visualOdometry->header.stamp.toSec();
-        }else{
-            visualTimeCurrent = visualOdometry->header.stamp.toSec();
-            visualTimeLast = visualTimeCurrent + 0.01;
-            visualActivated = true;
-        }  
-        
-        // roll, pitch and yaw 
-        double roll, pitch, yaw;
-        geometry_msgs::Quaternion orientation = visualOdometry->pose.pose.orientation;
-        tf::Matrix3x3(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w)).getRPY(roll, pitch, yaw);
+            if (visualActivated){
+                visualTimeLast = visualTimeCurrent;
+                visualTimeCurrent = visualOdometry->header.stamp.toSec();
+            }else{
+                visualTimeCurrent = visualOdometry->header.stamp.toSec();
+                visualTimeLast = visualTimeCurrent + 0.01;
+                visualActivated = true;
+            }  
+            
+            // roll, pitch and yaw 
+            double roll, pitch, yaw;
+            geometry_msgs::Quaternion orientation = visualOdometry->pose.pose.orientation;
+            tf::Matrix3x3(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w)).getRPY(roll, pitch, yaw);
 
-        visualMeasure.block(0,0,3,1) << visualOdometry->pose.pose.position.x, visualOdometry->pose.pose.position.y, visualOdometry->pose.pose.position.z;
-        visualMeasure.block(3,0,3,1) << roll, pitch, yaw;    
+            visualMeasure.block(0,0,3,1) << visualOdometry->pose.pose.position.x, visualOdometry->pose.pose.position.y, visualOdometry->pose.pose.position.z;
+            visualMeasure.block(3,0,3,1) << roll, pitch, yaw;    
 
-        // covariance
-        E_visual(0,0) = visualOdometry->pose.covariance[0];
-        E_visual(0,1) = visualOdometry->pose.covariance[1];
-        E_visual(0,2) = visualOdometry->pose.covariance[2];
-        E_visual(1,0) = visualOdometry->pose.covariance[3];
-        E_visual(1,1) = visualOdometry->pose.covariance[4];
-        E_visual(1,2) = visualOdometry->pose.covariance[5];
-        E_visual(2,0) = visualOdometry->pose.covariance[6];
-        E_visual(2,1) = visualOdometry->pose.covariance[7];
-        E_visual(2,2) = visualOdometry->pose.covariance[8];
+            // covariance
+            E_visual(0,0) = visualOdometry->pose.covariance[0];
+            E_visual(0,1) = visualOdometry->pose.covariance[1];
+            E_visual(0,2) = visualOdometry->pose.covariance[2];
+            E_visual(1,0) = visualOdometry->pose.covariance[3];
+            E_visual(1,1) = visualOdometry->pose.covariance[4];
+            E_visual(1,2) = visualOdometry->pose.covariance[5];
+            E_visual(2,0) = visualOdometry->pose.covariance[6];
+            E_visual(2,1) = visualOdometry->pose.covariance[7];
+            E_visual(2,2) = visualOdometry->pose.covariance[8];
 
-        // E_visual << visualOdometry->pose.covariance[0], visualOdometry->pose.covariance[1], visualOdometry->pose.covariance[2],
-        //             visualOdometry->pose.covariance[3], visualOdometry->pose.covariance[4], visualOdometry->pose.covariance[5],
-        //             visualOdometry->pose.covariance[6], visualOdometry->pose.covariance[7], visualOdometry->pose.covariance[8];
+            // time
+            visual_dt = visualTimeCurrent - visualTimeLast;
+            // visual_dt = 0.05;
 
-        // time
-        visual_dt = visualTimeCurrent - visualTimeLast;
-        // visual_dt = 0.05;
+            // header
+            double timediff = ros::Time::now().toSec() - timeV + visualTimeCurrent;
+            headerV = visualOdometry->header;
+            headerV.stamp = ros::Time().fromSec(timediff);
+            
+            // compute average intensity
+            
+            //New measure
+            filter.correction_visual_data(visual_odom, E_visual, dt, averageIntensity);
+        }
+    }
 
-        // header
-        double timediff = ros::Time::now().toSec() - timeV + visualTimeCurrent;
-        headerV = visualOdometry->header;
-        headerV.stamp = ros::Time().fromSec(timediff);
-        
-        //New measure
-        visualNew = true;
+    void visualOdometryDHandler(const nav_msgs::Odometry::ConstPtr& visualOdometry){
+        if (enableFilter && enableVisual && camera_type == 2){
+            Eigen::MatrixXd E_visual(6,6);
+
+            if (visualOdometry->pose.covariance[0] >= 9999.0 && visualOdometry->pose.pose.position.x == 0 && visualOdometry->pose.pose.position.y == 0 && visualOdometry->pose.pose.position.z == 0){
+                // reset pose 
+                rtabmap_msgs::ResetPose poseRgb;
+                poseRgb.request.x = visualOdometryOut.pose.pose.position.x;
+                poseRgb.request.y = visualOdometryOut.pose.pose.position.y;
+                poseRgb.request.z = visualOdometryOut.pose.pose.position.z;
+
+                double roll, pitch, yaw;
+                geometry_msgs::Quaternion orientation = visualOdometryOut.pose.pose.orientation;
+                tf::Matrix3x3(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w)).getRPY(roll, pitch, yaw);
+
+                poseRgb.request.roll = roll;
+                poseRgb.request.pitch = pitch;
+                poseRgb.request.yaw = yaw;
+
+                // call service
+                srv_client_rgbd.call(poseRgb);
+            }else{
+                double timeV = ros::Time::now().toSec();
+
+                if (visualActivated){
+                    visualTimeLast = visualTimeCurrent;
+                    visualTimeCurrent = visualOdometry->header.stamp.toSec();
+                }else{
+                    visualTimeCurrent = visualOdometry->header.stamp.toSec();
+                    visualTimeLast = visualTimeCurrent + 0.01;
+                    visualActivated = true;
+                }  
+                
+                // roll, pitch and yaw 
+                double roll, pitch, yaw;
+                geometry_msgs::Quaternion orientation = visualOdometry->pose.pose.orientation;
+                tf::Matrix3x3(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w)).getRPY(roll, pitch, yaw);
+
+                visualMeasure.block(0,0,3,1) << visualOdometry->pose.pose.position.x, visualOdometry->pose.pose.position.y, visualOdometry->pose.pose.position.z;
+                visualMeasure.block(3,0,3,1) << roll, pitch, yaw;    
+
+                // covariance
+                E_visual(0,0) = visualOdometry->pose.covariance[0];
+                E_visual(0,1) = visualOdometry->pose.covariance[1];
+                E_visual(0,2) = visualOdometry->pose.covariance[2];
+                E_visual(1,0) = visualOdometry->pose.covariance[3];
+                E_visual(1,1) = visualOdometry->pose.covariance[4];
+                E_visual(1,2) = visualOdometry->pose.covariance[5];
+                E_visual(2,0) = visualOdometry->pose.covariance[6];
+                E_visual(2,1) = visualOdometry->pose.covariance[7];
+                E_visual(2,2) = visualOdometry->pose.covariance[8];
+
+                // time
+                visual_dt = visualTimeCurrent - visualTimeLast;
+                // visual_dt = 0.05;
+
+                // header
+                double timediff = ros::Time::now().toSec() - timeV + visualTimeCurrent;
+                headerV = visualOdometry->header;
+                headerV.stamp = ros::Time().fromSec(timediff);
+                
+                //New measure
+                visualNew = true;
+            }            
+        }
+    }
+
+    void camLeftHandler(const sensor_msgs::ImageConstPtr& camIn){
+        int width = camIn->width;
+        int height = camIn->height;
+
+        int numPixels = width * height;
+        double intensitySum = 0.0;
+
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                int pixelIndex = y * width + x;
+                uint8_t intensity = camIn->data[pixelIndex];
+
+                intensitySum += intensity;
+            }
+        }
+
+        averageIntensity2 = intensitySum / numPixels;
+    }
+
+    void camRightHandler(const sensor_msgs::ImageConstPtr& camIn){
+        int width = camIn->width;
+        int height = camIn->height;
+
+        int numPixels = width * height;
+        double intensitySum = 0.0;
+
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                int pixelIndex = y * width + x;
+                uint8_t intensity = camIn->data[pixelIndex];
+
+                intensitySum += intensity;
+            }
+        }
+
+        averageIntensity1 = intensitySum / numPixels;
+    }
+
+    void camRgbHandler(const sensor_msgs::ImageConstPtr& camIn){
+        int width = camIn->width;
+        int height = camIn->height;
+        int numPixels = width * height;
+
+        // Calculate pixel step size
+        size_t pixel_step = camIn->step / camIn->width;
+
+        // Define weights for RGB channels
+        double redWeight = 0.2989;
+        double greenWeight = 0.5870;
+        double blueWeight = 0.1140;
+        double intensitySum = 0.0;
+
+
+        // Loop through image data and compute intensity
+        for (size_t y = 0; y < camIn->height; ++y){
+            for (size_t x = 0; x < camIn->width; ++x){
+                size_t index = y * camIn->step + x * pixel_step;
+
+                // Access RGB values
+                uint8_t r = camIn->data[index];
+                uint8_t g = camIn->data[index + 1];
+                uint8_t b = camIn->data[index + 2];
+
+                // Compute intensity using weighted average of RGB values
+                intensitySum += redWeight * double(r) + greenWeight * double(g) + blueWeight * double(b);
+            }
+        }
+
+        averageIntensity = intensitySum / numPixels;
     }
 
     //----------
@@ -916,159 +647,6 @@ public:
 
         pubFilteredOdometry.publish(filteredOdometry);
     }
-
-    void publish_indirect_odometry_measurement(VectorXd y, MatrixXd Pi){
-        indLiDAROdometry.header = headerL;
-        indLiDAROdometry.header.frame_id = "chassis_init";
-        indLiDAROdometry.child_frame_id = "ind_lidar_frame";
-
-        // twist
-        indLiDAROdometry.twist.twist.linear.x = y(0);
-        indLiDAROdometry.twist.twist.linear.y = y(1);
-        indLiDAROdometry.twist.twist.linear.z = y(2);
-        indLiDAROdometry.twist.twist.angular.x = y(3);
-        indLiDAROdometry.twist.twist.angular.y = y(4);
-        indLiDAROdometry.twist.twist.angular.z = y(5);
-
-        // twist convariance
-        int k = 0;
-        for (int i = 0; i < 6; i++){
-            for (int j = 0; j < 6; j++){
-                indLiDAROdometry.twist.covariance[k] = Pi(i,j);
-                k++;
-            }
-        } 
-
-        pubIndLiDARMeasurement.publish(indLiDAROdometry);
-    }
-
-    //----------
-    // runs
-    //----------
-    void run(){
-        // rate
-        ros::Rate r(200);        
-
-        double t_last = ros::Time::now().toSec();
-        double t_now;
-        double dt_now;
-        bool pub_lidar, pub_wheel, pub_imu, pub_pred, pub_visual;
-        pub_lidar = false;
-        pub_wheel = false;
-        pub_imu = false;
-        pub_pred = false;
-        pub_visual = false;
-
-        while (ros::ok())
-        {
-            // Prediction - initial marker
-            if (enableFilter){
-                // prediction stage
-                t_now = ros::Time::now().toSec();
-                dt_now = t_now-t_last;
-                t_last = t_now;
-
-                // prediction_stage(1/200.0);
-                prediction_stage(dt_now);
-                
-                // publish state
-                if (filterFreq == "p"){
-                    // publish_odom('p');
-                    pub_pred =  true;
-                }
-
-            }
-
-            //Correction IMU
-            if (enableFilter && enableImu && imuActivated && imuNew){
-                // correction stage
-                // correction_imu_stage(imu_dt);
-                correction_imu_stage(imu_dt);
-
-                // publish state
-                if (filterFreq == "i"){
-                    // publish_odom('i');
-                    pub_imu =  true;
-                }
-
-                // control variable
-                imuNew =  false;
-
-            }
-
-            // Correction wheel
-            if (enableFilter && enableWheel && wheelActivated && wheelNew){                
-                // correction stage
-                correction_wheel_stage(wheel_dt);
-
-                if (filterFreq == "w"){
-                     // publish_odom('w');
-                    pub_wheel = true;
-                }                
-
-                // control variable
-                wheelNew =  false;
-
-            }
-
-            //Corection LiDAR
-            if (enableFilter && enableLidar && lidarActivated && lidarNew){                
-                // correction stage
-                correction_lidar_stage(lidar_dt);
-                // correction_lidar_stage(0.2);
-
-                // publish state
-                if (filterFreq == "l"){
-                    // publish_odom('l');
-                    pub_lidar = true;
-                }
-
-                // controle variable
-                lidarNew =  false;
-
-            }
-
-             //Corection Visual
-            if (enableFilter && enableVisual && visualActivated && visualNew){                
-                // correction stage
-                correction_visual_stage(visual_dt);
-                // correction_visual_stage(0.01);
-
-                // publish state
-                if (filterFreq == "v"){
-                    // publish_odom('v');
-                    pub_visual = true;
-                }
-
-                // controle variable
-                visualNew =  false;
-
-            }
-
-            // publishing
-            if (pub_pred){
-                publish_odom('p');
-                pub_pred = false;
-            }else if (pub_lidar){
-                publish_odom('l');
-                pub_lidar =  false;
-            }else if (pub_wheel){
-                publish_odom('w');
-                pub_wheel = false;
-            }else if (pub_imu){
-                publish_odom('i');
-                pub_imu = false;
-            }else if (pub_visual){
-                publish_odom('v');
-                pub_visual = false;
-            }
-
-            // final marker - time: xxx.xx s, imu: true/false, wheel: true/false, visual: true/false
-            ros::spinOnce();
-            r.sleep();        
-        }
-    }
-
 };
 
 
@@ -1077,9 +655,9 @@ public:
 //-----------------------------
 int main(int argc, char** argv)
 {
-    ros::init(argc, argv, "adaptive_filter");
+    ros::init(argc, argv, "adaptive_odom_filter");
 
-    AdaptiveFilter AF;
+    adaptive_odom_filter AF;
 
     //Parameters init:    
     ros::NodeHandle nh_;
@@ -1092,23 +670,47 @@ int main(int argc, char** argv)
         nh_.param("/adaptive_filter/enableVisual", AF.enableVisual, false);
 
         nh_.param("/adaptive_filter/filterFreq", AF.filterFreq, std::string("l"));
+        nh_.param("/adaptive_filter/freq", AF.freq, double(200.0));
 
         nh_.param("/adaptive_filter/wheelG", AF.wheelG, float(0.05));
         nh_.param("/adaptive_filter/imuG", AF.imuG, float(0.1));
 
         nh_.param("/adaptive_filter/alpha_lidar", AF.alpha_lidar, double(0.98));
         nh_.param("/adaptive_filter/alpha_visual", AF.alpha_visual, double(0.98));
+
+        nh_.param("/adaptive_filter/lidarG", AC.lidarG, float(1000));
+        nh_.param("/adaptive_filter/wheelG", AC.wheelG, float(0.05));
+        nh_.param("/adaptive_filter/visualG", AC.visualG, float(0.05));
+        nh_.param("/adaptive_filter/imuG", AC.imuG, float(0.1));
+
+        nh_.param("/adaptive_filter/gamma_vx", AC.gamma_vx, float(0.05));
+        nh_.param("/adaptive_filter/gamma_omegaz", AC.gamma_omegaz, float(0.01));
+        nh_.param("/adaptive_filter/delta_vx", AC.delta_vx, float(0.0001));
+        nh_.param("/adaptive_filter/delta_omegaz", AC.delta_omegaz, float(0.00001));
+
+        nh_.param("/adaptive_filter/lidar_type_func", AC.lidar_type_func, int(2));
+        nh_.param("/adaptive_filter/visual_type_func", AC.visual_type_func, int(2));
+        nh_.param("/adaptive_filter/wheel_type_func", AC.wheel_type_func, int(1));
+
+        nh_.param("/adaptive_filter/camera_type", AC.camera_type, int(0));
     }
     catch (int e)
     {
         ROS_INFO("\033[1;31mAdaptive Filter:\033[0m Exception occurred when importing parameters in Adaptive Filter Node. Exception Nr. %d", e);
     }
 
+    // ros initialization
+    AF.ros_initialization();
+
+    // filter initialaization
+    AF.filter_initialization();
+
     if (AF.enableFilter){
         ROS_INFO("\033[1;32mAdaptive Filter:\033[0m Started.");
         // runs
-        AF.run();
+        AF.filter_start();
     }else{
+        AF.filter_stop();
         ROS_INFO("\033[1;32mAdaptive Filter: \033[0m Stopped.");
     }
     

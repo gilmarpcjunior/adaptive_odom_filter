@@ -26,10 +26,10 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
-add_executable(EKFAdaptiveFilter src/EKFAdaptiveFilter.cpp)
-target_link_libraries(EKFAdaptiveFilter ${catkin_LIBRARIES})
+# add_executable(EKFAdaptiveFilter src/EKFAdaptiveFilter.cpp)
+# target_link_libraries(EKFAdaptiveFilter ${catkin_LIBRARIES})
 
-add_executable(adaptive_covariance src/adaptive_covariance.cpp)
-target_link_libraries(adaptive_covariance ${catkin_LIBRARIES})
+# add_executable(adaptive_covariance src/adaptive_covariance.cpp)
+# target_link_libraries(adaptive_covariance ${catkin_LIBRARIES})
 
 
