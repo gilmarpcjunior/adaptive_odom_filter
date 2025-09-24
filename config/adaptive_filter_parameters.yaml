@@ -25,6 +25,10 @@
   delta_vx: 0.0001
   delta_omegaz: 0.00001
 
+  # visual odometry covariance
+  minIntensity: 0.0
+  maxIntensity: 1.0
+
   # type of adaptative function
   lidar_type_func: 2                        # 0: linear; 1: exponential; 2: original message
   visual_type_func: 2                       # 0: linear; 1: exponential; 2: original message

@@ -17,7 +17,7 @@ using namespace std;
 //-----------------------------
 // Adaptive EKF class
 //-----------------------------
-class AdaptiveFilter{
+class AdaptiveOdomFilter{
 
 private:
     // Measure
@@ -111,6 +111,16 @@ private:
     //----------------
     void run();
 
+    //---------------------------
+    // covariances functions
+    //---------------------------
+    MatrixXd adaptive_covariance(double fCorner, double fSurf);
+
+    MatrixXd adaptive_visual_covariance(double IntensityIn);
+
+    MatrixXd wheelOdometryAdaptiveCovariance(double omegaz_wheel_odom, double omegaz_imu);
+
+
 public:
     //------------------
     // Filter settings
@@ -147,22 +157,25 @@ public:
     double Gvx, Gvy, Gvz, Gvphi, Gvtheta, Gvpsi;
     float l_min;
 
+    double minIntensity; 
+    double maxIntensity; 
+
     //------------------
     // Constructor -  Destructor
     //------------------   
-    AdaptiveFilter();
-    ~AdaptiveFilter();
+    AdaptiveOdomFilter();
+    ~AdaptiveOdomFilter();
     
     //----------
     // Datas - ok
     //----------
     void correction_imu_data(VectorXd imu, MatrixXd E_imu, double dt);
 
-    void correction_wheel_data(VectorXd wheel_odom, MatrixXd E_wheel, double dt);
+    void correction_wheel_data(VectorXd wheel_odom, MatrixXd E_wheel, double dt, double omegaz_imu);
 
-    void correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar, double dt);
+    void correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar, double dt, double corner, double surf);
 
-    void correction_visual_data(VectorXd visual_odom, MatrixXd E_visual, double dt);
+    void correction_visual_data(VectorXd visual_odom, MatrixXd E_visual, double dt, double averageIntensity);
 
     //------------------
     // filter control

@@ -17,7 +17,7 @@ using namespace std;
 //------------------
 // Constructor - Destructor
 //------------------   
-AdaptiveFilter::AdaptiveFilter(){
+AdaptiveOdomFilter::AdaptiveOdomFilter(){
     // alocate memory
     allocateMemory();
 
@@ -26,7 +26,7 @@ AdaptiveFilter::AdaptiveFilter(){
     covariance_initialization();
 }
 
-AdaptiveFilter::~AdaptiveFilter() {
+AdaptiveOdomFilter::~AdaptiveOdomFilter() {
     stop();  
 }
 
@@ -36,7 +36,7 @@ AdaptiveFilter::~AdaptiveFilter() {
 //------------------
 // Auxliar functions
 //------------------
-void AdaptiveFilter::allocateMemory(){
+void AdaptiveOdomFilter::allocateMemory(){
     _imuMeasure.resize(_N_IMU);
     _wheelMeasure.resize(_N_WHEEL);
     _lidarMeasure.resize(_N_LIDAR);
@@ -59,7 +59,7 @@ void AdaptiveFilter::allocateMemory(){
     _PV.resize(_N_STATES,_N_STATES);
 }
 
-void AdaptiveFilter::initialization(){
+void AdaptiveOdomFilter::initialization(){
     // times and frequencies
     _imu_dt = 0.0005;
     _wheel_dt = 0.05;
@@ -132,9 +132,13 @@ void AdaptiveFilter::initialization(){
     // out data
     _V = _X;
     _PV = _P;
+
+    // visual covariances variables
+    minIntensity = 0.0; // only to teste
+    maxIntensity = 1.0; // only to teste
 }
 
-void AdaptiveFilter::covariance_initialization(){
+void AdaptiveOdomFilter::covariance_initialization(){
     // parameters
     lidar_type_func = 0;
     visual_type_func = 0;
@@ -169,7 +173,7 @@ void AdaptiveFilter::covariance_initialization(){
 //-----------------
 // predict function
 //-----------------
-void AdaptiveFilter::prediction_stage(double dt){
+void AdaptiveOdomFilter::prediction_stage(double dt){
     Eigen::MatrixXd F(_N_STATES,_N_STATES);
 
     // jacobian's computation
@@ -185,7 +189,7 @@ void AdaptiveFilter::prediction_stage(double dt){
 //-----------------
 // correction stage
 //-----------------
-void AdaptiveFilter::correction_wheel_stage(double dt){
+void AdaptiveOdomFilter::correction_wheel_stage(double dt){
     Eigen::VectorXd Y(_N_WHEEL), hx(_N_WHEEL);
     Eigen::MatrixXd H(_N_WHEEL,_N_STATES), K(_N_STATES,_N_WHEEL), E(_N_WHEEL,_N_WHEEL), S(_N_WHEEL,_N_WHEEL);
 
@@ -212,7 +216,7 @@ void AdaptiveFilter::correction_wheel_stage(double dt){
     _P = _P - K*H*_P;
 }
 
-void AdaptiveFilter::correction_imu_stage(double dt){
+void AdaptiveOdomFilter::correction_imu_stage(double dt){
     Eigen::Matrix3d S, E;
     Eigen::Vector3d Y, hx;
     Eigen::MatrixXd H(3,_N_STATES), K(_N_STATES,3);
@@ -252,7 +256,7 @@ void AdaptiveFilter::correction_imu_stage(double dt){
     _P = _P - K*H*_P;
 }
 
-void AdaptiveFilter::correction_lidar_stage(double dt){
+void AdaptiveOdomFilter::correction_lidar_stage(double dt){
     Eigen::MatrixXd K(_N_STATES,_N_LIDAR), S(_N_LIDAR,_N_LIDAR), G(_N_LIDAR,_N_LIDAR), Gl(_N_LIDAR,_N_LIDAR), Q(_N_LIDAR,_N_LIDAR);
     Eigen::VectorXd Y(_N_LIDAR), hx(_N_LIDAR);
     Eigen::MatrixXd H(_N_LIDAR,_N_STATES); 
@@ -290,7 +294,7 @@ void AdaptiveFilter::correction_lidar_stage(double dt){
     _E_lidarL = _E_lidar;
 }
 
-void AdaptiveFilter::correction_visual_stage(double dt){
+void AdaptiveOdomFilter::correction_visual_stage(double dt){
     Eigen::MatrixXd K(_N_STATES,_N_VISUAL), S(_N_VISUAL,_N_VISUAL), G(_N_VISUAL,_N_VISUAL), Gl(_N_VISUAL,_N_VISUAL), Q(_N_VISUAL,_N_VISUAL);
     Eigen::VectorXd Y(_N_VISUAL), hx(_N_VISUAL);
     Eigen::MatrixXd H(_N_VISUAL,_N_STATES); 
@@ -330,7 +334,7 @@ void AdaptiveFilter::correction_visual_stage(double dt){
 //---------
 // Models
 //---------
-VectorXd AdaptiveFilter::f_prediction_model(VectorXd x, double dt){ 
+VectorXd AdaptiveOdomFilter::f_prediction_model(VectorXd x, double dt){ 
     // state: {x, y, z, roll, pitch, yaw, vx, vy, vz, wx, wy, wz}
     //        {         (world)         }{        (body)        }
     Eigen::Matrix3d R, Rx, Ry, Rz, J;
@@ -359,7 +363,7 @@ VectorXd AdaptiveFilter::f_prediction_model(VectorXd x, double dt){
     return xp;
 }
 
-VectorXd AdaptiveFilter::indirect_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type){
+VectorXd AdaptiveOdomFilter::indirect_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type){
     Eigen::Matrix3d R, Rx, Ry, Rz, J;
     Eigen::VectorXd up, u_diff; 
     Eigen::MatrixXd A; 
@@ -428,7 +432,7 @@ VectorXd AdaptiveFilter::indirect_odometry_measurement(VectorXd u, VectorXd ul, 
 //----------
 // Jacobians
 //----------
-MatrixXd AdaptiveFilter::jacobian_state(VectorXd x, double dt){
+MatrixXd AdaptiveOdomFilter::jacobian_state(VectorXd x, double dt){
     Eigen::MatrixXd J(_N_STATES,_N_STATES);
     Eigen::VectorXd f0(_N_STATES), f1(_N_STATES), x_plus(_N_STATES);
 
@@ -450,7 +454,7 @@ MatrixXd AdaptiveFilter::jacobian_state(VectorXd x, double dt){
     return J;
 }
 
-MatrixXd AdaptiveFilter::jacobian_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type){
+MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type){
     Eigen::MatrixXd J;
     Eigen::VectorXd f0(_N_LIDAR), f1(_N_LIDAR), u_plus(_N_LIDAR);
     double delta;
@@ -508,7 +512,7 @@ MatrixXd AdaptiveFilter::jacobian_odometry_measurement(VectorXd u, VectorXd ul, 
     return J;
 }
 
-MatrixXd AdaptiveFilter::jacobian_odometry_measurementL(VectorXd u, VectorXd ul, double dt, char type){ 
+MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurementL(VectorXd u, VectorXd ul, double dt, char type){ 
     Eigen::MatrixXd J;
     Eigen::VectorXd f0(_N_LIDAR), f1(_N_LIDAR), ul_plus(_N_LIDAR);
     double delta;
@@ -569,7 +573,7 @@ MatrixXd AdaptiveFilter::jacobian_odometry_measurementL(VectorXd u, VectorXd ul,
 //--------------
 // run
 //--------------
-void AdaptiveFilter::run(){
+void AdaptiveOdomFilter::run(){
     // rate
     ros::Rate r(freq);        
 
@@ -644,7 +648,7 @@ void AdaptiveFilter::run(){
 //---------------------------
 // covariances functions
 //---------------------------
-MatrixXd AdaptiveFilter::adaptive_covariance(double fCorner, double fSurf){
+MatrixXd AdaptiveOdomFilter::adaptive_covariance(double fCorner, double fSurf){
     Eigen::MatrixXd Q(6,6);
     double cov_x, cov_y, cov_z, cov_phi, cov_psi, cov_theta;
     
@@ -679,11 +683,11 @@ MatrixXd AdaptiveFilter::adaptive_covariance(double fCorner, double fSurf){
     return Q;
 }
 
-MatrixXd AdaptiveFilter::adaptive_visual_covariance(double IntensityIn){
+MatrixXd AdaptiveOdomFilter::adaptive_visual_covariance(double IntensityIn){
     Eigen::MatrixXd Q(6,6);
     double cov, Intensity;
 
-    Intensity = (IntensityIn - _minIntensity)/(_maxIntensity - _minIntensity);
+    Intensity = (IntensityIn - minIntensity)/(maxIntensity - minIntensity);
     
     // heuristic
     switch(visual_type_func){
@@ -706,7 +710,7 @@ MatrixXd AdaptiveFilter::adaptive_visual_covariance(double IntensityIn){
     return Q;
 }
 
-MatrixXd AdaptiveFilter::wheelOdometryAdaptiveCovariance(double omegaz_wheel_odom, double omegaz_imu){
+MatrixXd AdaptiveOdomFilter::wheelOdometryAdaptiveCovariance(double omegaz_wheel_odom, double omegaz_imu){
     Eigen::MatrixXd E(2,2);
 
     E(0,0) = gamma_vx * abs(omegaz_wheel_odom - omegaz_imu) + delta_vx;
@@ -721,7 +725,7 @@ MatrixXd AdaptiveFilter::wheelOdometryAdaptiveCovariance(double omegaz_wheel_odo
 //----------
 // Datas
 //----------
-void AdaptiveFilter::correction_imu_data(VectorXd imu, MatrixXd E_imu, double dt){
+void AdaptiveOdomFilter::correction_imu_data(VectorXd imu, MatrixXd E_imu, double dt){
     std::lock_guard<std::mutex> lock(_mutex);
     // activation
     if (!_imuActivated){
@@ -737,7 +741,7 @@ void AdaptiveFilter::correction_imu_data(VectorXd imu, MatrixXd E_imu, double dt
     _imuNew = true;
 }
 
-void AdaptiveFilter::correction_wheel_data(VectorXd wheel_odom, MatrixXd E_wheel, double dt, double omegaz_imu){
+void AdaptiveOdomFilter::correction_wheel_data(VectorXd wheel_odom, MatrixXd E_wheel, double dt, double omegaz_imu){
     // mutex
     std::lock_guard<std::mutex> lock(_mutex);
 
@@ -762,7 +766,7 @@ void AdaptiveFilter::correction_wheel_data(VectorXd wheel_odom, MatrixXd E_wheel
     _wheelNew = true;
 }
 
-void AdaptiveFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar, double dt, double corner, double surf){
+void AdaptiveOdomFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar, double dt, double corner, double surf){
     std::lock_guard<std::mutex> lock(_mutex);
     // activation
     if (!_lidarActivated){
@@ -784,7 +788,7 @@ void AdaptiveFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar
     _lidarNew = true;
 }
 
-void AdaptiveFilter::correction_visual_data(VectorXd visual_odom, MatrixXd E_visual, double dt, double averageIntensity){
+void AdaptiveOdomFilter::correction_visual_data(VectorXd visual_odom, MatrixXd E_visual, double dt, double averageIntensity){
     // mutex
     std::lock_guard<std::mutex> lock(_mutex);
 
@@ -812,7 +816,7 @@ void AdaptiveFilter::correction_visual_data(VectorXd visual_odom, MatrixXd E_vis
 //------------------
 // filter control - verfica aqui
 // -----------------
-void AdaptiveFilter::get_state(VectorXd &X_state, MatrixXd &E_state) const {
+void AdaptiveOdomFilter::get_state(VectorXd &X_state, MatrixXd &E_state) {
     // rate
     ros::Rate r(2*freq); 
     int count = 0;
@@ -829,19 +833,19 @@ void AdaptiveFilter::get_state(VectorXd &X_state, MatrixXd &E_state) const {
     E_state = _PV;
 }
 
-void AdaptiveFilter::set_initial_state(VectorXd X_state, MatrixXd E_state){
+void AdaptiveOdomFilter::set_initial_state(VectorXd X_state, MatrixXd E_state){
     std::lock_guard<std::mutex> lock(_mutex);
     // priori stare
     _X = X_state;
     _P = E_state;
 }
 
-void AdaptiveFilter::start() {
+void AdaptiveOdomFilter::start() {
     _running = true;
-    _thread = std::thread(&AdaptiveFilter::run, this);
+    _thread = std::thread(&AdaptiveOdomFilter::run, this);
 }
 
-void AdaptiveFilter::stop() {
+void AdaptiveOdomFilter::stop() {
     _running = false;
     if (_thread.joinable()) {
         _thread.join();

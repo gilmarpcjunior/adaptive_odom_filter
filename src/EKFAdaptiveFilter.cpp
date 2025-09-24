@@ -96,13 +96,17 @@ private:
     double averageIntensity;
 
     // filter constructor 
-    AdaptiveFilter filter;
+    AdaptiveOdomFilter filter;
 
     // Measure
     Eigen::VectorXd imuMeasure, wheelMeasure, lidarMeasure, visualMeasure;
 
     // Measure Covariance
     Eigen::MatrixXd E_imu, E_wheel, E_lidar, E_visual;
+
+    // States and covariances
+    Eigen::VectorXd X;
+    Eigen::MatrixXd P;
 
 public:
     bool enableFilter;
@@ -125,6 +129,9 @@ public:
     float gamma_omegaz;
     float delta_vx;
     float delta_omegaz;
+
+    double minIntensity; 
+    double maxIntensity;
 
     int lidar_type_func;
     int visual_type_func;
@@ -207,6 +214,11 @@ public:
         E_lidar = Eigen::MatrixXd::Zero(6,6);
         E_visual = Eigen::MatrixXd::Zero(6,6);
         E_wheel = Eigen::MatrixXd::Zero(2,2);
+
+        X.resize(12);
+        P.resize(12,12);
+        X = Eigen::VectorXd::Zero(12);
+        P = Eigen::MatrixXd::Zero(12,12);
     }
 
     void filter_initialization(){
@@ -383,6 +395,9 @@ public:
         
         // correction stage aqui
         filter.correction_lidar_data(lidarMeasure, E_lidar, lidar_dt, corner, surf); // parei aqui. adicionar flag para publicação??
+
+        // get state here
+
     }
 
     void visualOdometryHandler(const nav_msgs::Odometry::ConstPtr& visualOdometry){
@@ -631,6 +646,7 @@ public:
 
         pubFilteredOdometry.publish(filteredOdometry);
     }
+
 };
 
 
@@ -671,6 +687,9 @@ int main(int argc, char** argv)
         nh_.param("/adaptive_filter/gamma_omegaz", AF.gamma_omegaz, float(0.01));
         nh_.param("/adaptive_filter/delta_vx", AF.delta_vx, float(0.0001));
         nh_.param("/adaptive_filter/delta_omegaz", AF.delta_omegaz, float(0.00001));
+
+        nh_.param("/adaptive_filter/minIntensity", AF.minIntensity, double(0.0));
+        nh_.param("/adaptive_filter/maxIntensity", AF.maxIntensity, double(1.0));
 
         nh_.param("/adaptive_filter/lidar_type_func", AF.lidar_type_func, int(2));
         nh_.param("/adaptive_filter/visual_type_func", AF.visual_type_func, int(2));
