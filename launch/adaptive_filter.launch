@@ -20,13 +20,8 @@
     
     <rosparam command="load" file="$(find adaptive_odom_filter)/config/adaptive_filter_parameters.yaml" />
     
-    <!-- Filter -->
-    <node if="$(arg filter)"  pkg="adaptive_odom_filter"  type="EKFAdaptiveFilter"  name="EKFAdaptiveFilter"   output="screen">
-          <remap from="/imu/data" to="$(arg imu)"/>
-    </node> 
-    
     <!-- State Machine -->
-    <node if="$(arg cov)"  pkg="adaptive_odom_filter"  type="adaptive_covariance"  name="adaptive_covariance"  output="screen">
+    <node if="$(arg cov)"  pkg="adaptive_odom_filter"  type="EKFAdaptiveFilter"  name="EKFAdaptiveFilter"  output="screen">
         <remap from="/imu/data"                        to="$(arg imu)"/>
         <remap from="/ekf_loam/laser_odom_to_initOut"  to="$(arg lidar_slam_odom)"/>
         <remap from="/t265/odom/sample"                to="$(arg tracking_camera)"/>

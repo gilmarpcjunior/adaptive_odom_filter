@@ -435,7 +435,6 @@ public:
 
             // time
             visual_dt = visualTimeCurrent - visualTimeLast;
-            // visual_dt = 0.05;
 
             // header
             double timediff = ros::Time::now().toSec() - timeV + visualTimeCurrent;
@@ -443,9 +442,10 @@ public:
             headerV.stamp = ros::Time().fromSec(timediff);
             
             // compute average intensity
-            
+            averageIntensity = (averageIntensity1 + averageIntensity2)/2;
+
             //New measure
-            filter.correction_visual_data(visual_odom, E_visual, dt, averageIntensity);
+            filter.correction_visual_data(visualMeasure, E_visual, visual_dt, averageIntensity);
         }
     }
 
@@ -511,7 +511,7 @@ public:
                 headerV.stamp = ros::Time().fromSec(timediff);
                 
                 //New measure
-                visualNew = true;
+                filter.correction_visual_data(visualMeasure, E_visual, visual_dt, averageIntensity);
             }            
         }
     }
