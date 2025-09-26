@@ -1,5 +1,6 @@
 # Adaptive Filter Package
 
+NOTE: UPDATE INFORMATION.
 
 Adaptive Filter Package is a filter that provides sensor fusion for the best accuracy in LiDAR SLAM odometry input, fusing wheel odometry with inertial sensor data and LiDAR odometry. This filter is part of the EKF-LOAM package, that is an update of the LeGO-LOAM, and has the adaptive covariances for wheel and LiDAR odometry. Depending on the angular velocity of the robot, two matrices are considered for wheel odometry. The LiDAR odometry covariance matrix depends on the number of edge and planar features identified in the environment.
 
