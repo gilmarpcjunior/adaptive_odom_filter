@@ -16,7 +16,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 catkin_package(
   INCLUDE_DIRS include
-  LIBRARIES adaptive_filter
+  LIBRARIES adaptive_odom_filter
   CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy sensor_msgs std_msgs tf rtabmap_msgs
 #  DEPENDS system_lib
 )
@@ -26,9 +26,17 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
 )
 
+add_library(adaptive_odom_filter
+    src/ekf_adaptive_tools.cpp
+)
+
+target_link_libraries(adaptive_odom_filter
+    ${catkin_LIBRARIES}
+)
+
 add_executable(EKFAdaptiveFilter src/EKFAdaptiveFilter.cpp
-               include/ekf_adaptive_tools/ekf_adaptive_tools.cpp
-               include/ekf_adaptive_tools.h)
+               src/ekf_adaptive_tools.cpp
+               include/adaptive_odom_filter/ekf_adaptive_tools.h)
 target_link_libraries(EKFAdaptiveFilter ${catkin_LIBRARIES})
 
 

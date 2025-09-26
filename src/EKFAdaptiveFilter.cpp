@@ -19,7 +19,8 @@
 //=======================================================================================================================================
 
 #include "settings_adaptive_filter.h"
-#include "ekf_adaptive_tools.h"
+// #include "ekf_adaptive_tools.h"
+#include <adaptive_odom_filter/ekf_adaptive_tools.h>
 #include <rtabmap_msgs/ResetPose.h>
 
 using namespace Eigen;

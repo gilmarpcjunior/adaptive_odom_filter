@@ -9,7 +9,8 @@
 //             E-mails: gilmarpcruzjunior@gmail.com, gmdeoliveira@ymail.com
 //=======================================================================================================================================
 
-#include "ekf_adaptive_tools.h"
+// #include "ekf_adaptive_tools.h"
+#include <adaptive_odom_filter/ekf_adaptive_tools.h>
 
 using namespace Eigen;
 using namespace std;
