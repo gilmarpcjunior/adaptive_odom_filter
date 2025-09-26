@@ -2,6 +2,7 @@
  adaptive_filter:
 
   # Filter settings
+  enableFilter: true
   enableImu: true
   enableWheel: true
   enableLidar: true
@@ -35,5 +36,5 @@
   wheel_type_func: 1                        # 0: our function; 1: original message
 
   # type of cameras
-  camera_type: 2                      # 1: tracking; 2: depth
+  camera_type: 1                      # 1: tracking; 2: depth
 

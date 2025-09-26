@@ -192,6 +192,7 @@ void AdaptiveOdomFilter::prediction_stage(double dt){
 void AdaptiveOdomFilter::correction_wheel_stage(double dt){
     Eigen::VectorXd Y(_N_WHEEL), hx(_N_WHEEL);
     Eigen::MatrixXd H(_N_WHEEL,_N_STATES), K(_N_STATES,_N_WHEEL), E(_N_WHEEL,_N_WHEEL), S(_N_WHEEL,_N_WHEEL);
+    Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
     // measure model of wheel odometry (only foward linear velocity)
     hx(0) = _X(6);
@@ -209,17 +210,22 @@ void AdaptiveOdomFilter::correction_wheel_stage(double dt){
 
     // Kalman's gain
     S = H*_P*H.transpose() + E;
-    K = _P*H.transpose()*S.inverse();
+    // K = _P*H.transpose()*S.inverse();
+    double eps = 1e-12; // ajuste conforme necessário
+    Eigen::MatrixXd S_reg = S + eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
+    K = _P * H.transpose() * S_reg.completeOrthogonalDecomposition().pseudoInverse();
 
     // correction
     _X = _X + K*(Y - hx);
-    _P = _P - K*H*_P;
+    // _P = _P - K*H*_P;
+    _P = (I - K*H)*_P*(I - K*H).transpose(); // forma de Joseph - Evita perda de simetria / negativo-definiteness
 }
 
 void AdaptiveOdomFilter::correction_imu_stage(double dt){
     Eigen::Matrix3d S, E;
     Eigen::Vector3d Y, hx;
     Eigen::MatrixXd H(3,_N_STATES), K(_N_STATES,3);
+    Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
     // measure model
     hx = _X.block(3,0,3,1);
@@ -236,7 +242,10 @@ void AdaptiveOdomFilter::correction_imu_stage(double dt){
 
     // Kalman's gain
     S = H*_P*H.transpose() + E;
-    K = _P*H.transpose()*S.inverse();
+    // K = _P*H.transpose()*S.inverse();
+    double eps = 1e-12; // ajuste conforme necessário
+    Eigen::MatrixXd S_reg = S + eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
+    K = _P * H.transpose() * S_reg.completeOrthogonalDecomposition().pseudoInverse();
 
     // correction - state
     Eigen::VectorXd residues(3), KR(_N_STATES);
@@ -253,13 +262,15 @@ void AdaptiveOdomFilter::correction_imu_stage(double dt){
 
     // X = X + K*(Y - hx); 
     // correction - covariance
-    _P = _P - K*H*_P;
+    // _P = _P - K*H*_P;
+    _P = (I - K*H)*_P*(I - K*H).transpose(); // forma de Joseph
 }
 
 void AdaptiveOdomFilter::correction_lidar_stage(double dt){
     Eigen::MatrixXd K(_N_STATES,_N_LIDAR), S(_N_LIDAR,_N_LIDAR), G(_N_LIDAR,_N_LIDAR), Gl(_N_LIDAR,_N_LIDAR), Q(_N_LIDAR,_N_LIDAR);
     Eigen::VectorXd Y(_N_LIDAR), hx(_N_LIDAR);
     Eigen::MatrixXd H(_N_LIDAR,_N_STATES); 
+    Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
     // measure model
     hx = _X.block(6,0,6,1);
@@ -283,11 +294,15 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
 
     // Kalman's gain
     S = H*_P*H.transpose() + Q;
-    K = _P*H.transpose()*S.inverse();
+    // K = _P*H.transpose()*S.inverse();
+    double eps = 1e-12; // ajuste conforme necessário
+    Eigen::MatrixXd S_reg = S + eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
+    K = _P * H.transpose() * S_reg.completeOrthogonalDecomposition().pseudoInverse();
 
     // correction
     _X = _X + K*(Y - hx);
-    _P = _P - K*H*_P;
+    // _P = _P - K*H*_P;
+    _P = (I - K*H)*_P*(I - K*H).transpose(); // forma de Joseph
 
     // last measurement
     _lidarMeasureL = _lidarMeasure;
@@ -297,7 +312,8 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
 void AdaptiveOdomFilter::correction_visual_stage(double dt){
     Eigen::MatrixXd K(_N_STATES,_N_VISUAL), S(_N_VISUAL,_N_VISUAL), G(_N_VISUAL,_N_VISUAL), Gl(_N_VISUAL,_N_VISUAL), Q(_N_VISUAL,_N_VISUAL);
     Eigen::VectorXd Y(_N_VISUAL), hx(_N_VISUAL);
-    Eigen::MatrixXd H(_N_VISUAL,_N_STATES); 
+    Eigen::MatrixXd H(_N_VISUAL,_N_STATES);
+    Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
     // measure model
     hx = _X.block(6,0,6,1);
@@ -320,11 +336,15 @@ void AdaptiveOdomFilter::correction_visual_stage(double dt){
 
     // Kalman's gain
     S = H*_P*H.transpose() + Q;
-    K = _P*H.transpose()*S.inverse();
+    // K = _P*H.transpose()*S.inverse();
+    double eps = 1e-12; // ajuste conforme necessário
+    Eigen::MatrixXd S_reg = S + eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
+    K = _P * H.transpose() * S_reg.completeOrthogonalDecomposition().pseudoInverse();
 
     // correction
     _X = _X + K*(Y - hx);
-    _P = _P - K*H*_P;
+    // _P = _P - K*H*_P;
+    _P = (I - K*H)*_P*(I - K*H).transpose(); // forma de Joseph
 
     // last measurement
     _visualMeasureL = _visualMeasure;
@@ -338,8 +358,11 @@ VectorXd AdaptiveOdomFilter::f_prediction_model(VectorXd x, double dt){
     // state: {x, y, z, roll, pitch, yaw, vx, vy, vz, wx, wy, wz}
     //        {         (world)         }{        (body)        }
     Eigen::Matrix3d R, Rx, Ry, Rz, J;
-    Eigen::VectorXd xp(_N_STATES);
+    Eigen::VectorXd xp(_N_STATES), Axdt(_N_STATES), xNew(_N_STATES);
     Eigen::MatrixXd A(6,6);
+
+    xNew = x; // robo diferencial - monociclo; para outros modelos alterar aqui
+    xNew.block(7,0,3,1) = Eigen::Vector3d::Zero(); // vy, vz, wx, wy igual a zero.
 
     // Rotation matrix
     Rx = Eigen::AngleAxisd(x(3), Eigen::Vector3d::UnitX());
@@ -357,7 +380,16 @@ VectorXd AdaptiveOdomFilter::f_prediction_model(VectorXd x, double dt){
     A.block(0,0,3,3) = R;
     A.block(3,3,3,3) = J;
 
-    xp.block(0,0,6,1) = x.block(0,0,6,1) + A*x.block(6,0,6,1)*dt;
+    // displacement
+    Axdt = A*x.block(6,0,6,1)*dt;
+    // position
+    xp.block(0,0,3,1) = x.block(0,0,3,1) + Axdt.block(0,0,3,1);
+    // orientation
+    xp(3) = atan2(sin(x(3) - Axdt(3)), cos(x(3) - Axdt(3)));
+    xp(4) = atan2(sin(x(4) - Axdt(4)), cos(x(4) - Axdt(4)));
+    xp(5) = atan2(sin(x(5) - Axdt(5)), cos(x(5) - Axdt(5))); 
+    // xp.block(0,0,6,1) = x.block(0,0,6,1) + A*x.block(6,0,6,1)*dt;
+    // velocity
     xp.block(6,0,6,1) = x.block(6,0,6,1);
 
     return xp;
@@ -446,9 +478,9 @@ MatrixXd AdaptiveOdomFilter::jacobian_state(VectorXd x, double dt){
         f1 = f_prediction_model(x_plus, dt);
         
         J.block(0,i,_N_STATES,1) = (f1 - f0)/delta;       
-        J(3,i) = sin(f1(3) - f0(3))/delta;
-        J(4,i) = sin(f1(4) - f0(4))/delta;
-        J(5,i) = sin(f1(5) - f0(5))/delta; 
+        J(3,i) = atan2(sin(f1(3) - f0(3)),cos(f1(3) - f0(3)))/delta;
+        J(4,i) = atan2(sin(f1(4) - f0(4)),cos(f1(4) - f0(4)))/delta;
+        J(5,i) = atan2(sin(f1(5) - f0(5)),cos(f1(5) - f0(5)))/delta; 
     }
 
     return J;
@@ -476,9 +508,9 @@ MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurement(VectorXd u, VectorXd 
                 f1 = indirect_odometry_measurement(u_plus, ul, dt, 'l');
             
                 J.block(0,i,_N_LIDAR,1) = (f1 - f0)/delta;       
-                J(3,i) = sin(f1(3) - f0(3))/delta;
-                J(4,i) = sin(f1(4) - f0(4))/delta;
-                J(5,i) = sin(f1(5) - f0(5))/delta; 
+                J(3,i) = atan2(sin(f1(3) - f0(3)), cos(f1(3) - f0(3)))/delta;
+                J(4,i) = atan2(sin(f1(4) - f0(4)), cos(f1(4) - f0(4)))/delta;
+                J(5,i) = atan2(sin(f1(5) - f0(5)), cos(f1(5) - f0(5)))/delta; 
             }
 
             break;
@@ -498,9 +530,9 @@ MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurement(VectorXd u, VectorXd 
                 f1 = indirect_odometry_measurement(u_plus, ul, dt, 'v');
             
                 J.block(0,i,_N_VISUAL,1) = (f1 - f0)/delta;       
-                J(3,i) = sin(f1(3) - f0(3))/delta;
-                J(4,i) = sin(f1(4) - f0(4))/delta;
-                J(5,i) = sin(f1(5) - f0(5))/delta; 
+                J(3,i) = atan2(sin(f1(3) - f0(3)),cos(f1(3) - f0(3)))/delta;
+                J(4,i) = atan2(sin(f1(4) - f0(4)),cos(f1(4) - f0(4)))/delta;
+                J(5,i) = atan2(sin(f1(5) - f0(5)),cos(f1(5) - f0(5)))/delta; 
             }
 
             break;
@@ -534,9 +566,9 @@ MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurementL(VectorXd u, VectorXd
                 f1 = indirect_odometry_measurement(u, ul_plus, dt, 'l');
             
                 J.block(0,i,_N_LIDAR,1) = (f1 - f0)/delta;       
-                J(3,i) = sin(f1(3) - f0(3))/delta;
-                J(4,i) = sin(f1(4) - f0(4))/delta;
-                J(5,i) = sin(f1(5) - f0(5))/delta; 
+                J(3,i) = atan2(sin(f1(3) - f0(3)), cos(f1(3) - f0(3)))/delta;
+                J(4,i) = atan2(sin(f1(4) - f0(4)), cos(f1(4) - f0(4)))/delta;
+                J(5,i) = atan2(sin(f1(5) - f0(5)), cos(f1(5) - f0(5)))/delta;
             }
 
             break;
@@ -556,9 +588,9 @@ MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurementL(VectorXd u, VectorXd
                 f1 = indirect_odometry_measurement(u, ul_plus, dt, 'v');
             
                 J.block(0,i,_N_VISUAL,1) = (f1 - f0)/delta;       
-                J(3,i) = sin(f1(3) - f0(3))/delta;
-                J(4,i) = sin(f1(4) - f0(4))/delta;
-                J(5,i) = sin(f1(5) - f0(5))/delta; 
+                J(3,i) = atan2(sin(f1(3) - f0(3)), cos(f1(3) - f0(3)))/delta;
+                J(4,i) = atan2(sin(f1(4) - f0(4)), cos(f1(4) - f0(4)))/delta;
+                J(5,i) = atan2(sin(f1(5) - f0(5)), cos(f1(5) - f0(5)))/delta;
             }
 
             break;
@@ -588,7 +620,6 @@ void AdaptiveOdomFilter::run(){
         dt_now = t_now-t_last;
         t_last = t_now;
 
-        // prediction_stage(1/200.0);
         prediction_stage(dt_now);
 
         {
@@ -597,45 +628,37 @@ void AdaptiveOdomFilter::run(){
             if (enableImu && _imuActivated && _imuNew){
                 // correction stage
                 correction_imu_stage(_imu_dt);
-
                 // control variable
                 _imuNew =  false;
-                _computing =  true;
             }
 
             // Correction wheel
             if (enableWheel && _wheelActivated && _wheelNew){                
                 // correction stage
                 correction_wheel_stage(_wheel_dt);
-
                 // control variable
                 _wheelNew =  false;
-                _computing =  true;
+            }
+
+            //Corection Visual
+            if (enableVisual && _visualActivated && _visualNew){                
+                // correction stage
+                correction_visual_stage(_visual_dt);
+                // controle variable
+                _visualNew =  false;
             }
 
             //Corection LiDAR
             if (enableLidar && _lidarActivated && _lidarNew){                
                 // correction stage
                 correction_lidar_stage(_lidar_dt);
-
                 // controle variable
                 _lidarNew =  false;
-                _computing =  true;
             }
 
-                //Corection Visual
-            if (enableVisual && _visualActivated && _visualNew){                
-                // correction stage
-                correction_visual_stage(_visual_dt);
-
-                // controle variable
-                _visualNew =  false;
-                _computing =  true;
-            }
+            
         }
  
-        _computing =  false;
-
         // out data
         _V = _X;
         _PV = _P;
@@ -753,7 +776,7 @@ void AdaptiveOdomFilter::correction_wheel_data(VectorXd wheel_odom, MatrixXd E_w
     // update data
     _wheelMeasure = wheel_odom;
 
-    if (wheel_type_func==2){
+    if (wheel_type_func==1){
         _E_wheel = E_wheel;
     }else{
         double omegaz_wheel_odom = wheel_odom(1);
@@ -779,7 +802,7 @@ void AdaptiveOdomFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_l
         _E_lidar = E_lidar;
     }else{
         Eigen::MatrixXd E_lidar(6,6);
-        E_lidar = adaptive_covariance(corner, surf);                
+        _E_lidar = adaptive_covariance(corner, surf);                
     }
 
     _lidar_dt = dt;
@@ -817,20 +840,10 @@ void AdaptiveOdomFilter::correction_visual_data(VectorXd visual_odom, MatrixXd E
 // filter control - verfica aqui
 // -----------------
 void AdaptiveOdomFilter::get_state(VectorXd &X_state, MatrixXd &E_state) {
-    // rate
-    ros::Rate r(2*freq); 
-    int count = 0;
-
-    while (_computing || count < 10*freq){
-        count++;
-        // sleep marker 
-        r.sleep(); 
-    }
-
     std::lock_guard<std::mutex> lock(_mutex);
-    // wait for finish the prediction
-    X_state = _V;
-    E_state = _PV;
+    // get the last state updated
+    X_state = _X;
+    E_state = _P;
 }
 
 void AdaptiveOdomFilter::set_initial_state(VectorXd X_state, MatrixXd E_state){

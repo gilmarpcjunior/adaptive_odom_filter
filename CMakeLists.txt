@@ -27,7 +27,7 @@ include_directories(
 )
 
 add_executable(EKFAdaptiveFilter src/EKFAdaptiveFilter.cpp
-               src/ekf_adaptive_tools.cpp
+               include/ekf_adaptive_tools/ekf_adaptive_tools.cpp
                include/ekf_adaptive_tools.h)
 target_link_libraries(EKFAdaptiveFilter ${catkin_LIBRARIES})
 

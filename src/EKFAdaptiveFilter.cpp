@@ -227,6 +227,10 @@ public:
         filter.enableWheel = enableWheel;
         filter.enableLidar = enableLidar;
         filter.enableVisual = enableVisual;
+        filter.lidar_type_func = lidar_type_func;
+        filter.visual_type_func = visual_type_func;
+        filter.wheel_type_func = wheel_type_func;
+
         filter.freq = freq;
 
         // there are other parameters to set, i.e., the priori state with your covariance matrix
@@ -234,21 +238,21 @@ public:
 
     void ros_initialization(){
         // Subscriber
-        subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/ekf_loam/laser_odom_to_initOut", 5, &adaptive_odom_filter::laserOdometryHandler, this);   
+        subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/lidar_odom", 5, &adaptive_odom_filter::laserOdometryHandler, this);   
         subWheelOdometry = nh.subscribe<nav_msgs::Odometry>("/odom", 5, &adaptive_odom_filter::wheelOdometryHandler, this);
         subImu = nh.subscribe<sensor_msgs::Imu>("/imu/data", 50, &adaptive_odom_filter::imuHandler, this);
         
         if (camera_type==1){
-            subVisualOdometry = nh.subscribe<nav_msgs::Odometry>("/t265/odom/sample", 5, &adaptive_odom_filter::visualOdometryHandler, this);
-            subCamLeft = nh.subscribe<sensor_msgs::Image>("/t265/fisheye2/image_raw", 5, &adaptive_odom_filter::camLeftHandler, this);
-            subCamRight = nh.subscribe<sensor_msgs::Image>("/t265/fisheye1/image_raw", 5, &adaptive_odom_filter::camRightHandler, this);
+            subVisualOdometry = nh.subscribe<nav_msgs::Odometry>("/tracking_odom", 5, &adaptive_odom_filter::visualOdometryHandler, this);
+            subCamLeft = nh.subscribe<sensor_msgs::Image>("/left_camera", 5, &adaptive_odom_filter::camLeftHandler, this);
+            subCamRight = nh.subscribe<sensor_msgs::Image>("/rigth_camera", 5, &adaptive_odom_filter::camRightHandler, this);
         }else if (camera_type==2){
-            subVisualOdometryD = nh.subscribe<nav_msgs::Odometry>("/rtabmap/odom", 5, &adaptive_odom_filter::visualOdometryDHandler, this);
-            subCamRgb = nh.subscribe<sensor_msgs::Image>("/d435i/color/image_raw", 5, &adaptive_odom_filter::camRgbHandler, this);
+            subVisualOdometryD = nh.subscribe<nav_msgs::Odometry>("/depth_odom", 5, &adaptive_odom_filter::visualOdometryDHandler, this);
+            subCamRgb = nh.subscribe<sensor_msgs::Image>("/camera_color", 5, &adaptive_odom_filter::camRgbHandler, this);
         }
             
         // Publisher
-        pubFilteredOdometry = nh.advertise<nav_msgs::Odometry> ("/ekf_loam/filter_odom_to_init", 5);
+        pubFilteredOdometry = nh.advertise<nav_msgs::Odometry> ("/filter_odom", 5);
 
         // Services
         srv_client_rgbd = nh.serviceClient<rtabmap_msgs::ResetPose>("/rtabmap/reset_odom_to_pose");
@@ -258,6 +262,7 @@ public:
     // Filter functions
     //------------------
     void filter_start(){
+        ROS_INFO("\033[1;32mAdaptive Filter:\033[0m Filter Started.");
         filter.start();
     }
 
@@ -397,7 +402,10 @@ public:
         filter.correction_lidar_data(lidarMeasure, E_lidar, lidar_dt, corner, surf); // parei aqui. adicionar flag para publicação??
 
         // get state here
+        filter.get_state(X, P);
 
+        // publish
+        publish_odom('l');
     }
 
     void visualOdometryHandler(const nav_msgs::Odometry::ConstPtr& visualOdometry){
@@ -663,7 +671,7 @@ int main(int argc, char** argv)
     ros::NodeHandle nh_;
     try
     {
-        nh_.param("/ekf_loam/enableFilter", AF.enableFilter, false);
+        nh_.param("/adaptive_filter/enableFilter", AF.enableFilter, false);
         nh_.param("/adaptive_filter/enableImu", AF.enableImu, false);
         nh_.param("/adaptive_filter/enableWheel", AF.enableWheel, false);
         nh_.param("/adaptive_filter/enableLidar", AF.enableLidar, false);
@@ -702,6 +710,10 @@ int main(int argc, char** argv)
         ROS_INFO("\033[1;31mAdaptive Filter:\033[0m Exception occurred when importing parameters in Adaptive Filter Node. Exception Nr. %d", e);
     }
 
+    // AsyncSpinner
+    ros::AsyncSpinner spinner(7);
+    spinner.start();
+
     // ros initialization
     AF.ros_initialization();
 
@@ -717,7 +729,7 @@ int main(int argc, char** argv)
         ROS_INFO("\033[1;32mAdaptive Filter: \033[0m Stopped.");
     }
     
-    ros::spin();
+    ros::waitForShutdown();
     return 0;
 }
 
