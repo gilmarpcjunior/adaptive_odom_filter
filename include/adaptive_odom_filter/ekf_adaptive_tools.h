@@ -39,6 +39,9 @@ private:
     double _lidar_dt;
     double _visual_dt;
 
+    double _eps;
+    double _epsR;
+
     // number of state or measure vectors
     int _N_STATES = 12;
     int _N_IMU = 9; 

@@ -337,7 +337,7 @@ public:
         } 
 
         // measure
-        wheelMeasure << -1.0*wheelOdometry->twist.twist.linear.x, wheelOdometry->twist.twist.angular.z;
+        wheelMeasure << 1.0*wheelOdometry->twist.twist.linear.x, wheelOdometry->twist.twist.angular.z;
 
         // covariance
         E_wheel(0,0) = wheelG*wheelOdometry->twist.covariance[0];
