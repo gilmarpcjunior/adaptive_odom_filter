@@ -6,7 +6,7 @@
   enableImu: true
   enableWheel: true
   enableLidar: true
-  enableVisual: true
+  enableVisual: false
   filterFreq: "l"
   freq: 200.0
 

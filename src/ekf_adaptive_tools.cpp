@@ -174,6 +174,33 @@ void AdaptiveOdomFilter::covariance_initialization(){
     l_min = 0.01;
 }
 
+inline double wrapToPi(double a) {
+    return std::atan2(std::sin(a), std::cos(a));
+}
+
+Eigen::Vector3d rotToAngularVelocity(const Eigen::Matrix3d &R_cur, const Eigen::Matrix3d &R_prev, double dt) {
+    if (dt <= 0.0) return Eigen::Vector3d::Zero();
+
+    Eigen::Matrix3d R_rel = R_cur * R_prev.transpose();
+    Eigen::AngleAxisd aa(R_rel);
+    double angle = aa.angle();
+    Eigen::Vector3d axis = aa.axis();
+
+    if (!std::isfinite(angle) || !axis.allFinite()) {
+        return Eigen::Vector3d::Zero();
+    }
+
+    // garantir ângulo em [-pi, pi]
+    if (angle > M_PI) angle -= 2.0 * M_PI;
+    if (angle < -M_PI) angle += 2.0 * M_PI;
+
+    if (std::abs(angle) < 1e-12) {
+        return Eigen::Vector3d::Zero();
+    }
+
+    return axis * (angle / dt);
+}
+
 //-----------------
 // predict function
 //-----------------
@@ -220,7 +247,7 @@ void AdaptiveOdomFilter::correction_wheel_stage(double dt){
 
     // correction
     KY = K*(Y - hx);
-    // std::cout << "wheel: Y = \n" << Y << "\nhx = \n" << hx << "\nKY = \n" << KY << "\nX = \n" << _X << std::endl;
+    // std::cout << "wheel: Y = \n" << Y << "\nhx = \n" << hx << std::endl;
 
     _X.block(0,0,3,1) = _X.block(0,0,3,1) + KY.block(0,0,3,1);
     _X(3) = atan2(sin(_X(3) + KY(3)),cos(_X(3) + KY(3)));
@@ -269,6 +296,8 @@ void AdaptiveOdomFilter::correction_imu_stage(double dt){
     residues(2) = atan2(sin(Y(2) - hx(2)), cos(Y(2) - hx(2)));
     KR = K*residues;
 
+    // std::cout << "imu: Y = \n" << Y << "\nhx = \n" << hx << std::endl;
+
     _X.block(0,0,3,1) = _X.block(0,0,3,1) + KR.block(0,0,3,1);
     _X(3) = atan2(sin(_X(3) + KR(3)), cos(_X(3) + KR(3)));
     _X(4) = atan2(sin(_X(4) + KR(4)), cos(_X(4) + KR(4)));
@@ -299,6 +328,10 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
         _firstLidar = false;
     }
     Y = indirect_odometry_measurement(_lidarMeasure, _lidarMeasureL, dt, 'l');
+    // std::cout << "filter _lidarMeasure: \n" << _lidarMeasure 
+    //           << "\nfilter_lidarMeasureL: \n" << _lidarMeasureL 
+    //           << "\nfilter Y(diff): \n" << Y
+    //           << std::endl;
 
     // Jacobian of hx with respect to the states
     H = Eigen::MatrixXd::Zero(_N_LIDAR,_N_STATES);
@@ -323,9 +356,69 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
     _X(4) = atan2(sin(_X(4) + KY(4)),cos(_X(4) + KY(4)));
     _X(5) = atan2(sin(_X(5) + KY(5)),cos(_X(5) + KY(5)));
     _X.block(6,0,6,1) = _X.block(6,0,6,1) + KY.block(6,0,6,1);
+    // std::cout << "lidar: Y = \n" << Y << "\nhx = \n" << hx << std::endl;
     // _X = _X + K*(Y - hx);
     // _P = _P - K*H*_P;
     R = _epsR*Eigen::MatrixXd::Identity(_N_LIDAR,_N_LIDAR);
+    _P = (I - K*H)*_P*(I - K*H).transpose() + K*R*K.transpose();; // forma de Joseph - Evita perda de simetria / negativo-definiteness
+    // force symmetrize (corrige erros numéricos)
+    _P = 0.5 * (_P + _P.transpose());
+
+    // last measurement
+    _lidarMeasureL = _lidarMeasure;
+    _E_lidarL = _E_lidar;
+}
+
+void AdaptiveOdomFilter::correction_lidar_stage_old(double dt){
+    Eigen::MatrixXd K(_N_STATES,9), S(9,9), G(_N_LIDAR,_N_LIDAR), Gl(_N_LIDAR,_N_LIDAR), Q(9,9), R(_N_LIDAR,_N_LIDAR);
+    Eigen::VectorXd Y(9), hx(9), KY(_N_STATES);
+    Eigen::MatrixXd H(9,_N_STATES); 
+    Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
+
+    // measure model
+    hx = _X.block(3,0,9,1);
+    // lidar measurement
+    if (_firstLidar){
+        _lidarMeasureL = _lidarMeasure;
+        _E_lidarL =_E_lidar;
+        _firstLidar = false;
+    }
+    Y.block(0,0,3,1) = _lidarMeasure.block(3,0,3,1);
+    Y.block(3,0,6,1) = indirect_odometry_measurement(_lidarMeasure, _lidarMeasureL, dt, 'l');
+
+    // Jacobian of hx with respect to the states
+    H = Eigen::MatrixXd::Zero(9,_N_STATES);
+    H.block(0,3,9,9) = Eigen::MatrixXd::Identity(9,9);
+
+    // Error propagation
+    G = jacobian_odometry_measurement(_lidarMeasure, _lidarMeasureL, dt, 'l');
+    Gl = jacobian_odometry_measurementL(_lidarMeasure, _lidarMeasureL, dt, 'l');
+
+    Q.block(0,0,3,3) = 0.0001*_E_lidar.block(3,3,3,3);
+    Q.block(3,3,6,6) =  G*_E_lidar*G.transpose() + Gl*_E_lidarL*Gl.transpose();
+
+    // Kalman's gain
+    S = H*_P*H.transpose() + Q;
+    // K = _P*H.transpose()*S.inverse();
+    Eigen::MatrixXd S_reg = S + _eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
+    K = _P * H.transpose() * S_reg.completeOrthogonalDecomposition().pseudoInverse();
+
+    // correction
+    Eigen::VectorXd Yhx(9);
+    Yhx(0) = atan2(sin(Y(0) - hx(0)),cos(Y(0) - hx(0)));
+    Yhx(1) = atan2(sin(Y(1) - hx(1)),cos(Y(1) - hx(1)));
+    Yhx(2) = atan2(sin(Y(2) - hx(2)),cos(Y(2) - hx(2)));
+    Yhx.block(3,0,6,1) = Y.block(3,0,6,1) - hx.block(3,0,6,1);
+    KY = K*Yhx;
+    _X.block(0,0,3,1) = _X.block(0,0,3,1) + KY.block(0,0,3,1);
+    _X(3) = atan2(sin(_X(3) + KY(3)),cos(_X(3) + KY(3)));
+    _X(4) = atan2(sin(_X(4) + KY(4)),cos(_X(4) + KY(4)));
+    _X(5) = atan2(sin(_X(5) + KY(5)),cos(_X(5) + KY(5)));
+    _X.block(6,0,6,1) = _X.block(6,0,6,1) + KY.block(6,0,6,1);
+    // std::cout << "lidar: Y = \n" << Y << "\nhx = \n" << hx << std::endl;
+    // _X = _X + K*(Y - hx);
+    // _P = _P - K*H*_P;
+    R = _epsR*Eigen::MatrixXd::Identity(9,9);
     _P = (I - K*H)*_P*(I - K*H).transpose() + K*R*K.transpose();; // forma de Joseph - Evita perda de simetria / negativo-definiteness
     // force symmetrize (corrige erros numéricos)
     _P = 0.5 * (_P + _P.transpose());
@@ -397,7 +490,7 @@ VectorXd AdaptiveOdomFilter::f_prediction_model(VectorXd x, double dt){
     Eigen::MatrixXd A(6,6);
 
     xNew = x; // robo diferencial - monociclo; para outros modelos alterar aqui
-    xNew.block(7,0,3,1) = Eigen::Vector3d::Zero(); // vy, vz, wx, wy igual a zero.
+    // xNew.block(7,0,3,1) = Eigen::Vector3d::Zero(); // vy, vz, wx, wy igual a zero.
 
     // Rotation matrix
     Rx = Eigen::AngleAxisd(x(3), Eigen::Vector3d::UnitX());
@@ -490,10 +583,139 @@ VectorXd AdaptiveOdomFilter::indirect_odometry_measurement(VectorXd u, VectorXd 
     A.block(0,0,3,3) = R.transpose();
     A.block(3,3,3,3) = J.inverse();
 
+    // std::cout << "u_diff = \n" << u_diff << ", A*u_diff = \n" << A*u_diff << ", dt = " << dt << std::endl;
     up = A*u_diff/dt;
 
     return up;
 
+}
+
+// erro na translacao
+VectorXd AdaptiveOdomFilter::indirect_odometry_measurement_new(VectorXd u, VectorXd ul, double dt, char type) {
+    Eigen::Matrix3d R;
+    Eigen::MatrixXd A;
+    Eigen::VectorXd up, u_diff;
+
+    // Seleciona modelo
+    switch (type) {
+        case 'l':
+            up.resize(_N_LIDAR);
+            u_diff.resize(_N_LIDAR);
+            A = Eigen::MatrixXd::Zero(_N_LIDAR, _N_LIDAR);
+            break;
+        case 'v':
+            up.resize(_N_VISUAL);
+            u_diff.resize(_N_VISUAL);
+            A = Eigen::MatrixXd::Zero(_N_VISUAL, _N_VISUAL);
+            break;
+        default:
+            return VectorXd(); // vazio se tipo inválido
+    }
+
+    // -------------------------------------------------------
+    // Parte linear (posição): diferença direta
+    // -------------------------------------------------------
+    u_diff.block(0, 0, 3, 1) = (u.block(0, 0, 3, 1) - ul.block(0, 0, 3, 1));
+
+    // -------------------------------------------------------
+    // Parte angular (Euler -> velocidade no corpo)
+    // -------------------------------------------------------
+    // Ângulos anteriores e atuais (normalizados)
+    double phi_prev   = wrapToPi(ul(3));
+    double theta_prev = wrapToPi(ul(4));
+    double psi_prev   = wrapToPi(ul(5));
+
+    double phi_cur   = wrapToPi(u(3));
+    double theta_cur = wrapToPi(u(4));
+    double psi_cur   = wrapToPi(u(5));
+
+    // Diferença de Euler normalizada
+    Eigen::Vector3d euler_diff;
+    euler_diff(0) = wrapToPi(phi_cur   - phi_prev);
+    euler_diff(1) = wrapToPi(theta_cur - theta_prev);
+    euler_diff(2) = wrapToPi(psi_cur   - psi_prev);
+
+    // Derivada aproximada
+    Eigen::Vector3d e_dot = Eigen::Vector3d::Zero();
+    if (dt > 1e-9) e_dot = euler_diff / dt;
+
+    // Jacobiano J em torno do estado anterior
+    Eigen::Matrix3d J;
+    double s_phi = sin(phi_prev), c_phi = cos(phi_prev);
+    double t_theta = tan(theta_prev);
+    double s_theta = sin(theta_prev), c_theta = cos(theta_prev);
+
+    J << 1.0, s_phi * t_theta, c_phi * t_theta,
+         0.0, c_phi,          -s_phi,
+         0.0, s_phi / c_theta, c_phi / c_theta;
+
+    // Resolver J * omega = e_dot usando SVD
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(J, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Vector3d s = svd.singularValues();
+
+    double cond = (s.minCoeff() <= 0) ? 
+                  std::numeric_limits<double>::infinity() : 
+                  s.maxCoeff() / s.minCoeff();
+
+    const double COND_THRESH = 1e6; // limite de condição
+
+    Eigen::Vector3d omega_body;
+    if (cond < COND_THRESH) {
+        // Resolver de forma estável
+        omega_body = svd.solve(e_dot);
+    } else {
+        // Fallback via SO(3) Eigen::AngleAxisd(ul(3), Eigen::Vector3d::UnitX()); 
+        Eigen::Matrix3d R_prev = (Eigen::AngleAxisd(psi_prev, Eigen::Vector3d::UnitZ()) *
+                                 Eigen::AngleAxisd(theta_prev, Eigen::Vector3d::UnitY()) *
+                                 Eigen::AngleAxisd(phi_prev, Eigen::Vector3d::UnitX())).toRotationMatrix();
+        Eigen::Matrix3d R_cur  = (Eigen::AngleAxisd(psi_cur, Eigen::Vector3d::UnitZ()) *
+                                 Eigen::AngleAxisd(theta_cur, Eigen::Vector3d::UnitY()) *
+                                 Eigen::AngleAxisd(phi_cur, Eigen::Vector3d::UnitX())).toRotationMatrix();
+        omega_body = rotToAngularVelocity(R_cur, R_prev, dt);
+    }
+
+    // Preenche vetor de diferenças
+    u_diff(3) = omega_body(0);
+    u_diff(4) = omega_body(1);
+    u_diff(5) = omega_body(2);
+
+    // -------------------------------------------------------
+    // Aplica pesos (alpha)
+    // -------------------------------------------------------
+    switch (type) {
+        case 'l':
+            u_diff = alpha_lidar * u_diff;
+            break;
+        case 'v':
+            u_diff = alpha_visual * u_diff;
+            break;
+    }
+
+    // -------------------------------------------------------
+    // Matriz A (mapeamento final)
+    // -------------------------------------------------------
+    // Matriz de rotação global -> corpo (usando ul como base)
+    Eigen::Matrix3d Rx = Eigen::AngleAxisd(phi_prev,   Eigen::Vector3d::UnitX()).toRotationMatrix();
+    Eigen::Matrix3d Ry = Eigen::AngleAxisd(theta_prev, Eigen::Vector3d::UnitY()).toRotationMatrix();
+    Eigen::Matrix3d Rz = Eigen::AngleAxisd(psi_prev,   Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    R = Rz * Ry * Rx;
+
+    A.block(0, 0, 3, 3) = R.transpose();
+    A.block(3, 3, 3, 3) = Eigen::Matrix3d::Identity(); // já temos omega_body direto
+
+    // -------------------------------------------------------
+    // Saída
+    // -------------------------------------------------------
+    up = A * u_diff;
+
+    // std::cout << "u_diff = \n" << u_diff.transpose()
+    //           << "\ncond(J) = " << cond
+    //           << "\nup = \n" << up.transpose()
+    //           << "\nU = \n" << u.transpose()
+    //           << "\nUl = \n" << ul.transpose()
+    //           << ", dt = " << dt << std::endl;
+
+    return up;
 }
 
 //----------
@@ -656,7 +878,7 @@ void AdaptiveOdomFilter::run(){
         t_last = t_now;
 
         prediction_stage(dt_now);
-        std::cout << "Prediction: X = \n" << _X << "\nP = \n" << _P << std::endl;
+        // std::cout << "Prediction: X = \n" << _X << std::endl; //<< "\nP = \n" << _P << std::endl;
 
         {
             std::lock_guard<std::mutex> lock(_mutex);
@@ -666,7 +888,7 @@ void AdaptiveOdomFilter::run(){
                 correction_imu_stage(_imu_dt);
                 // control variable
                 _imuNew =  false;
-                std::cout << "imu: X = \n" << _X << "\nP = \n" << _P << std::endl;
+                // std::cout << "imu: \n" << std::endl; // << _X << "\nP = \n" << _P << std::endl;
             }
 
             // Correction wheel
@@ -675,7 +897,7 @@ void AdaptiveOdomFilter::run(){
                 correction_wheel_stage(_wheel_dt);
                 // control variable
                 _wheelNew =  false;
-                std::cout << "wheel: X = \n" << _X << "\nP = \n" << _P << std::endl;
+                // std::cout << "wheel: \n" << std::endl; //X = \n" << _X << "\nP = \n" << _P << std::endl;
             }
             
 
@@ -685,7 +907,7 @@ void AdaptiveOdomFilter::run(){
                 correction_visual_stage(_visual_dt);
                 // controle variable
                 _visualNew =  false;
-                std::cout << "visual: X = \n" << _X << "\nP = \n" << _P << std::endl;
+                // std::cout << "visual: \n" << std::endl; //X = \n" << _X << "\nP = \n" << _P << std::endl;
             }
 
             //Corection LiDAR
@@ -694,7 +916,7 @@ void AdaptiveOdomFilter::run(){
                 correction_lidar_stage(_lidar_dt);
                 // controle variable
                 _lidarNew =  false;
-                std::cout << "lidar: X = \n" << _X << "\nP = \n" << _P << std::endl;
+                // std::cout << "lidar: \n" << std::endl; //X = \n" << _X << "\nP = \n" << _P << std::endl;
             }
 
             
@@ -842,7 +1064,6 @@ void AdaptiveOdomFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_l
     if (lidar_type_func==2){
         _E_lidar = E_lidar;
     }else{
-        Eigen::MatrixXd E_lidar(6,6);
         _E_lidar = adaptive_covariance(corner, surf);                
     }
 
@@ -867,7 +1088,6 @@ void AdaptiveOdomFilter::correction_visual_data(VectorXd visual_odom, MatrixXd E
     if (visual_type_func==2){
         _E_visual = E_visual;
     }else{
-        Eigen::MatrixXd E_visual(6,6);
         _E_visual = adaptive_visual_covariance(averageIntensity);
     }
 

@@ -91,6 +91,8 @@ private:
 
     void correction_lidar_stage(double dt);
 
+    void correction_lidar_stage_old(double dt);
+
     void correction_visual_stage(double dt);
 
     //---------
@@ -99,6 +101,8 @@ private:
     VectorXd f_prediction_model(VectorXd x, double dt);
 
     VectorXd indirect_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type);
+
+    VectorXd indirect_odometry_measurement_new(VectorXd u, VectorXd ul, double dt, char type);
 
     //----------
     // Jacobians
