@@ -616,6 +616,17 @@ void AdaptiveOdomFilter::run(){
     double t_now;
     double dt_now;
 
+    double imu_count, wheel_count, lidar_count, visual_count;
+    bool imu_fail_msg, wheel_fail_msg, lidar_fail_msg, visual_fail_msg;
+    imu_count = 0;
+    wheel_count = 0;
+    lidar_count = 0;
+    visual_count = 0;
+    imu_fail_msg = false;
+    wheel_fail_msg = false;
+    lidar_fail_msg = false;
+    visual_fail_msg = false;
+
     while (_running && rclcpp::ok())
     {
         // prediction stage
@@ -623,7 +634,29 @@ void AdaptiveOdomFilter::run(){
         dt_now = t_now - t_last;
         t_last = t_now;
 
-        prediction_stage(dt_now);
+        if(imu_count >= _imu_dt*1.2) {
+            imu_fail_msg = true;
+        }
+
+        if(wheel_count >= _wheel_dt*1.2) {
+            wheel_fail_msg = true;
+        }
+
+        if(lidar_count >= _lidar_dt*1.2) {
+            lidar_fail_msg = true;
+        }
+
+        if(visual_count >= _visual_dt*1.2) {
+            visual_fail_msg = true;
+        }
+
+        if ((_imuActivated || _wheelActivated || _lidarActivated || _visualActivated) && (!(imu_fail_msg && wheel_fail_msg && lidar_fail_msg && visual_fail_msg))){
+            prediction_stage(dt_now);
+        }
+        else {
+            // printf("Sensors failed, waiting for new data...\n");
+            continue;
+        }
 
         {
             std::lock_guard<std::mutex> lock(_mutex);
@@ -631,27 +664,41 @@ void AdaptiveOdomFilter::run(){
             if (enableImu && _imuActivated && _imuNew){
                 correction_imu_stage(_imu_dt);
                 _imuNew =  false;
+                imu_fail_msg = false;
+                imu_count = 0;
             }
 
             // Correction wheel
             if (enableWheel && _wheelActivated && _wheelNew){                
                 correction_wheel_stage(_wheel_dt);
                 _wheelNew =  false;
+                wheel_fail_msg = false;
+                wheel_count = 0;
             }
 
             //Corection Visual
             if (enableVisual && _visualActivated && _visualNew){                
                 correction_visual_stage(_visual_dt);
                 _visualNew =  false;
+                visual_fail_msg = false;
+                visual_count = 0;
             }
 
             //Corection LiDAR
             if (enableLidar && _lidarActivated && _lidarNew){                
                 correction_lidar_stage(_lidar_dt);
                 _lidarNew =  false;
+                lidar_fail_msg = false;
+                lidar_count = 0;
             }
         }
- 
+        
+        // counters increment
+        imu_count += dt_now;
+        wheel_count += dt_now;
+        lidar_count += dt_now;
+        visual_count += dt_now;
+
         // out data
         _V = _X;
         _PV = _P;

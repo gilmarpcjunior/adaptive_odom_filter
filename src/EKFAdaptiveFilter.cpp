@@ -123,16 +123,16 @@ private:
     Eigen::MatrixXd P;
 
     // --- tiny helpers ---
-   static builtin_interfaces::msg::Time toStampFromSec(double sec) {
-  	builtin_interfaces::msg::Time t;
-  	if (sec < 0.0) sec = 0.0;
-  	const int32_t s = static_cast<int32_t>(sec);
-  	const double  frac = sec - static_cast<double>(s);
-  	const uint32_t ns = static_cast<uint32_t>(std::round(frac * 1e9));
-  	t.sec = s;
-  	t.nanosec = ns;
-  	return t;
-   }
+    static builtin_interfaces::msg::Time toStampFromSec(double sec) {
+        builtin_interfaces::msg::Time t;
+        if (sec < 0.0) sec = 0.0;
+        const int32_t s = static_cast<int32_t>(sec);
+        const double  frac = sec - static_cast<double>(s);
+        const uint32_t ns = static_cast<uint32_t>(std::round(frac * 1e9));
+        t.sec = s;
+        t.nanosec = ns;
+        return t;
+    }
 
 
 public:
@@ -261,8 +261,26 @@ public:
         filter.wheel_type_func = wheel_type_func;
 
         filter.freq = freq;
+        
+        filter.wheelG = wheelG;
+        filter.imuG = imuG;
+        filter.lidarG = lidarG;
+        filter.visualG = visualG;
 
-        // there are other parameters to set, i.e., the priori state with your covariance matrix
+        filter.alpha_lidar = alpha_lidar;
+        filter.alpha_visual = alpha_visual;
+
+        filter.gamma_vx = gamma_vx;
+        filter.gamma_omegaz = gamma_omegaz;
+        filter.delta_vx = delta_vx;
+        filter.delta_omegaz = delta_omegaz;
+
+        filter.minIntensity = minIntensity;
+        filter.maxIntensity = maxIntensity;
+
+        filter.lidar_type_func  = lidar_type_func; 
+        filter.visual_type_func = visual_type_func;
+        filter.wheel_type_func  = wheel_type_func; 
     }
 
     void ros_initialization(){
@@ -364,91 +382,122 @@ public:
 
     void wheelOdometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr& wheelOdometry){
         double timeL = rclcpp::Clock(RCL_STEADY_TIME).now().seconds();
-
+    
         // time
         if (wheelActivated){
-            wheelTimeLast = wheelTimeCurrent;
+            wheelTimeLast    = wheelTimeCurrent;
             wheelTimeCurrent = rclcpp::Time(wheelOdometry->header.stamp).seconds();
         }else{
             wheelTimeCurrent = rclcpp::Time(wheelOdometry->header.stamp).seconds();
-            wheelTimeLast = wheelTimeCurrent + 0.01;
-            wheelActivated = true;
-        } 
-
-        // measure
-        wheelMeasure << -1.0*wheelOdometry->twist.twist.linear.x, wheelOdometry->twist.twist.angular.z;
-
-        // covariance
-        E_wheel(0,0) = wheelG*wheelOdometry->twist.covariance[0];
-        E_wheel(1,1) = 100*wheelOdometry->twist.covariance[35];
-
-        // time
+            wheelTimeLast    = wheelTimeCurrent;
+            wheelActivated   = true;
+            return;
+        }
+    
         wheel_dt = wheelTimeCurrent - wheelTimeLast;
-
+    
+        // gate
+        const double MAX_VX = 3.0;   // m/s
+        const double MAX_WZ = 2.0;   // rad/s
+    
+        double vx = 1.0 * wheelOdometry->twist.twist.linear.x;
+        double wz =        wheelOdometry->twist.twist.angular.z;
+    
+        if (std::abs(vx) > MAX_VX || std::abs(wz) > MAX_WZ || wheel_dt <= 1e-4)
+            return;
+    
+        // measure
+        wheelMeasure << vx, wz;
+    
+        // covariance
+        E_wheel(0,0) = wheelG * wheelOdometry->twist.covariance[0];
+        E_wheel(1,1) = 100.0 * wheelOdometry->twist.covariance[35];
+    
         // header
         double timediff = rclcpp::Clock(RCL_STEADY_TIME).now().seconds() - timeL + wheelTimeCurrent;
         headerW = wheelOdometry->header;
         headerW.stamp = toStampFromSec(timediff);
-
-        // correction stage aqui
+    
+        // correction
         filter.correction_wheel_data(wheelMeasure, E_wheel, wheel_dt, imuMeasure(5));
     }
-
+    
+    
     void laserOdometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr& laserOdometry){
         double timeL = rclcpp::Clock(RCL_STEADY_TIME).now().seconds();
-
-        if (lidarActivated){
-            lidarTimeLast = lidarTimeCurrent;
-            lidarTimeCurrent = rclcpp::Time(laserOdometry->header.stamp).seconds();
-        }else{
-            lidarTimeCurrent = rclcpp::Time(laserOdometry->header.stamp).seconds();
-            lidarTimeLast = lidarTimeCurrent + 0.01;
-            lidarActivated = true;
-        }  
-        
-        // roll, pitch and yaw 
+    
+        double stamp_sec = rclcpp::Time(laserOdometry->header.stamp).seconds();
+    
+        // time
+        if (!lidarActivated) {
+            lidarActivated   = true;
+            lidarTimeLast    = stamp_sec;
+            lidarTimeCurrent = stamp_sec;
+            return;
+        }
+    
+        lidarTimeLast    = lidarTimeCurrent;
+        lidarTimeCurrent = stamp_sec;
+        lidar_dt         = lidarTimeCurrent - lidarTimeLast;
+    
+        if (lidar_dt <= 1e-4)
+            return;
+    
+        // rpy
         double roll, pitch, yaw;
         const auto& qmsg = laserOdometry->pose.pose.orientation;
         tf2::Quaternion q(qmsg.x, qmsg.y, qmsg.z, qmsg.w);
         tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-
+    
         // measure
-        lidarMeasure.block(0,0,3,1) << laserOdometry->pose.pose.position.x, laserOdometry->pose.pose.position.y, laserOdometry->pose.pose.position.z;
-        lidarMeasure.block(3,0,3,1) << roll, pitch, yaw;    
-
-        // covariance (top-left 3x3 from pose.covariance)
-        E_lidar(0,0) = laserOdometry->pose.covariance[0];
-        E_lidar(0,1) = laserOdometry->pose.covariance[1];
-        E_lidar(0,2) = laserOdometry->pose.covariance[2];
-        E_lidar(1,0) = laserOdometry->pose.covariance[3];
-        E_lidar(1,1) = laserOdometry->pose.covariance[4];
-        E_lidar(1,2) = laserOdometry->pose.covariance[5];
-        E_lidar(2,0) = laserOdometry->pose.covariance[6];
-        E_lidar(2,1) = laserOdometry->pose.covariance[7];
-        E_lidar(2,2) = laserOdometry->pose.covariance[8];
-
-        // for adaptive covariance
+        lidarMeasure.block(0,0,3,1) << laserOdometry->pose.pose.position.x,
+                                       laserOdometry->pose.pose.position.y,
+                                       laserOdometry->pose.pose.position.z;
+        lidarMeasure.block(3,0,3,1) << roll, pitch, yaw;
+    
+        // gate
+        static bool have_last_lidar = false;
+        static Eigen::Vector3d last_pos;
+    
+        Eigen::Vector3d curr_pos(
+            laserOdometry->pose.pose.position.x,
+            laserOdometry->pose.pose.position.y,
+            laserOdometry->pose.pose.position.z);
+    
+        if (have_last_lidar) {
+            double dx = (curr_pos - last_pos).norm();
+            if (dx > 5.0) {
+                last_pos = curr_pos;
+                return;
+            }
+        }
+        last_pos        = curr_pos;
+        have_last_lidar = true;
+    
+        // covariance 6x6
+        int k = 0;
+        for (int i = 0; i < 6; ++i)
+            for (int j = 0; j < 6; ++j)
+                E_lidar(i,j) = laserOdometry->pose.covariance[k++];
+    
+        // orientação
+        double orient_gain = 1.0;
+        E_lidar.block<3,3>(3,3) *= orient_gain;
+    
         double corner = double(laserOdometry->twist.twist.linear.x);
         double surf   = double(laserOdometry->twist.twist.angular.x);
-
-        // time
-        lidar_dt = lidarTimeCurrent - lidarTimeLast;
-
+    
         // header
         double timediff = rclcpp::Clock(RCL_STEADY_TIME).now().seconds() - timeL + lidarTimeCurrent;
         headerL = laserOdometry->header;
         headerL.stamp = toStampFromSec(timediff);
-        
-        // correction stage aqui
+    
+        // correction
         filter.correction_lidar_data(lidarMeasure, E_lidar, lidar_dt, corner, surf);
-
-        // get state here
         filter.get_state(X, P);
-
-        // publish
         publish_odom('l');
-    }
-
+    }    
+        
     void visualOdometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr& visualOdometry){
         if (camera_type == 1){ 
             double timeV = rclcpp::Clock(RCL_STEADY_TIME).now().seconds();
@@ -708,7 +757,7 @@ public:
 public:
     // ----------------- parameter loading (minimal change) -----------------
     void load_parameters()
-    {
+    {   
         // Declare with defaults (ROS 2 style). Use flat names.
         this->declare_parameter<bool>("enableFilter", false);
         this->declare_parameter<bool>("enableImu", false);
@@ -741,7 +790,7 @@ public:
         this->declare_parameter<int>("wheel_type_func", 1);
 
         this->declare_parameter<int>("camera_type", 0);
-
+        
         // Get values
         enableFilter = this->get_parameter("enableFilter").as_bool();
         enableImu    = this->get_parameter("enableImu").as_bool();
@@ -789,6 +838,8 @@ int main(int argc, char** argv)
 
     // Parameters init (ROS 2): loaded from YAML/CLI into the node
     try {
+        RCLCPP_INFO(node->get_logger(),
+            "\033[1;31mAdaptive Filter:\033[0m Loading parameters.");
         node->load_parameters();
     } catch (...) {
         RCLCPP_INFO(node->get_logger(),
