@@ -106,7 +106,7 @@ void AdaptiveOdomFilter::initialization(){
     _E_pred = Eigen::MatrixXd::Zero(_N_STATES,_N_STATES);
 
     // indirect measurement
-    alpha_lidar = 0.99;
+    alpha_lidar = 1.0;
     alpha_visual = 0.999;
 
     // state initial
@@ -265,7 +265,7 @@ void AdaptiveOdomFilter::correction_imu_stage(double dt){
     // X = X + K*(Y - hx); 
     // correction - covariance
     // _P = _P - K*H*_P;
-    _P = (I - K*H)*_P*(I - K*H).transpose(); // forma de Joseph
+    _P = (I - K*H)*_P*(I - K*H).transpose() + K * E * K.transpose(); // forma de Joseph
 }
 
 void AdaptiveOdomFilter::correction_lidar_stage(double dt){
@@ -304,7 +304,7 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
     // correction
     _X = _X + K*(Y - hx);
     // _P = _P - K*H*_P;
-    _P = (I - K*H)*_P*(I - K*H).transpose(); // forma de Joseph
+    _P = (I - K*H)*_P*(I - K*H).transpose() + K * Q * K.transpose(); // forma de Joseph
 
     // last measurement
     _lidarMeasureL = _lidarMeasure;
@@ -383,13 +383,13 @@ VectorXd AdaptiveOdomFilter::f_prediction_model(VectorXd x, double dt){
     A.block(3,3,3,3) = J;
 
     // displacement
-    Axdt = A*x.block(6,0,6,1)*dt;
+    Axdt = A*xNew.block(6,0,6,1)*dt;
     // position
     xp.block(0,0,3,1) = x.block(0,0,3,1) + Axdt.block(0,0,3,1);
     // orientation
-    xp(3) = atan2(sin(x(3) - Axdt(3)), cos(x(3) - Axdt(3)));
-    xp(4) = atan2(sin(x(4) - Axdt(4)), cos(x(4) - Axdt(4)));
-    xp(5) = atan2(sin(x(5) - Axdt(5)), cos(x(5) - Axdt(5))); 
+    xp(3) = atan2(sin(x(3) + Axdt(3)), cos(x(3) + Axdt(3)));
+    xp(4) = atan2(sin(x(4) + Axdt(4)), cos(x(4) + Axdt(4)));
+    xp(5) = atan2(sin(x(5) + Axdt(5)), cos(x(5) + Axdt(5))); 
     // velocity
     xp.block(6,0,6,1) = x.block(6,0,6,1);
 
@@ -839,7 +839,7 @@ void AdaptiveOdomFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_l
     // update data
     _lidarMeasure = lidar_odom;
     if (lidar_type_func==2){
-        _E_lidar = E_lidar;
+        _E_lidar = lidarG*E_lidar;
     }else{
         Eigen::MatrixXd E_lidar(6,6);
         _E_lidar = adaptive_covariance(corner, surf);                

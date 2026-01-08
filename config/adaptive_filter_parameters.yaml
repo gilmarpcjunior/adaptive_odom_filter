@@ -4,7 +4,7 @@ adaptive_odom_filter:
     enableFilter: true
     enableImu: true
     enableWheel: true
-    enableLidar: false
+    enableLidar: true
     enableVisual: false
     filterFreq: "w"
     freq: 200.0
@@ -14,14 +14,14 @@ adaptive_odom_filter:
     alpha_visual: 0.999
 
     # gains
-    lidarG: 100.0
-    wheelG: 100.0
-    visualG: 0.1
-    imuG: 0.1
+    lidarG: 0.0001
+    wheelG: 10.0
+    visualG: 0.0
+    imuG: 1000.0
 
     # Wheel odometry covariance adaptive positive constants
     gamma_vx: 0.001        
-    gamma_omegaz: 0.04    
+    gamma_omegaz: 100.0    
     delta_vx: 0.0001      
     delta_omegaz: 0.001   
 
