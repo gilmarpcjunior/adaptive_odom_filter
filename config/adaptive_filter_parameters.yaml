@@ -8,17 +8,20 @@
   enableLidar: true
   enableVisual: false
   filterFreq: "l"
-  freq: 200.0
+  freq: 20.0
 
   # input filter
   alpha_lidar: 0.99
   alpha_visual: 0.999
 
   # gains  
-  lidarG: 75
-  wheelG: 0.5
+  lidarG: 1 # 75
+  wheelGVx: 0.001 # 0.5  0.006 0.018 --- 0.006 , 0.05 (melhor ate agora)
+  wheelGVy: 1 # 0.5 0.5 ---- 1
+  wheelGWz: 40 # 0.5
+  wheelOffset: 1.0e-5 # 0.5  2.0e-2  3.0e-3 --- 2.0e-2 (melhorou) 1.0e-2 (melhorou) 1e-4 (melhor ate agora)
   visualG: 0.1
-  imuG: 100
+  imuG: 1 # 100
 
   # Wheel odometry covariance adaptive positive constants
   gamma_vx: 0.05
@@ -34,7 +37,8 @@
   lidar_type_func: 2                        # 0: linear; 1: exponential; 2: original message
   visual_type_func: 2                       # 0: linear; 1: exponential; 2: original message
   wheel_type_func: 1                        # 0: our function; 1: original message
+  experiment: 0                            # 0: adaptive covariance, 1: wheel and LiDAR equal, 2: wheel > LiDAR, 3: wheel < LiDAR
 
   # type of cameras
-  camera_type: 1                      # 1: tracking; 2: depth
+  camera_type: 1                            # 1: tracking; 2: depth
 

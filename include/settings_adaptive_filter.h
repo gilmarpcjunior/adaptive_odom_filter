@@ -20,10 +20,13 @@
 #include <nav_msgs/Odometry.h>
 #include <std_msgs/Time.h>
 #include <std_msgs/Header.h>
+#include <geometry_msgs/PoseStamped.h>
 
 #include <tf/transform_broadcaster.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_listener.h>
+
+#include "cloud_msgs/cloud_features.h"
  
 #include <vector>
 #include <cmath>

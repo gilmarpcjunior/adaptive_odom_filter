@@ -1,0 +1,31 @@
+<launch>
+
+  <!-- arguments -->
+  <arg name="filter"              value="true" />
+  <arg name="test"                value="false" />
+
+  <!-- Inputs adapted to the script's topics -->
+  <arg name="imu"                 value="/imu/data" />
+  <arg name="lidar_slam_odom"     value="/ekf_loam/laser_odom_with_cov" />
+  <arg name="lidar_features"      value="/ekf_loam/features_cloud_info" />
+  <!-- No separate visual SLAM odom from the script -->
+  <arg name="wheel_odom"          value="/odom_with_cov" />
+
+  <!-- Outputs (keep or adjust as your downstream expects) -->
+  <arg name="filter_odom"         value="/ekf_loam/filter_odom_to_init" />
+
+  <rosparam command="load" file="$(find adaptive_odom_filter)/config/adaptive_robust_filter_parameters.yaml" />
+
+  <!-- Filter -->
+  <node if="$(arg filter)" pkg="adaptive_odom_filter" type="EKFRobustAdaptiveFilter" name="EKFAdaptiveFilter" output="screen">
+    <remap from="/imu/data"                        to="$(arg imu)"/>
+    <remap from="/lidar_odom"                      to="$(arg lidar_slam_odom)"/>
+    <remap from="/features_cloud_info"             to="$(arg lidar_features)"/>
+    <remap from="/odom"                            to="$(arg wheel_odom)"/>
+    <remap from="/filter_odom"                     to="$(arg filter_odom)"/>
+  </node>
+
+  <include file="$(find lidar_covariance_estimation)/launch/lidar_cov_estimator.launch" /> 
+  <include file="$(find wheel_covariance_estimation)/launch/wheel_cov_estimator.launch" /> 
+
+</launch>

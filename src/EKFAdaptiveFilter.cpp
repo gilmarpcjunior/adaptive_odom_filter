@@ -109,6 +109,9 @@ private:
     Eigen::VectorXd X;
     Eigen::MatrixXd P;
 
+    // Imu orientation corretion -- erase this 
+    Eigen::Matrix3d R_init;
+
 public:
     bool enableFilter;
     bool enableImu;
@@ -123,8 +126,13 @@ public:
 
     float lidarG;
     float visualG;
-    float wheelG;
+    float wheelGVx;
+    float wheelGVy;
+    float wheelGWz;
+    float wheelOffset;
     float imuG;
+
+    int experiment;
 
     float gamma_vx;
     float gamma_omegaz;
@@ -187,7 +195,7 @@ public:
         enableLidar = false;
         enableVisual = false;
 
-        wheelG = 0; // delete
+        // wheelG = 0; // delete
         imuG = 0;
 
         // adaptive covariance - visual odometry
@@ -197,29 +205,32 @@ public:
 
         // measure
         imuMeasure.resize(9);
-        wheelMeasure.resize(2);
+        wheelMeasure.resize(3);
         lidarMeasure.resize(6);
         visualMeasure.resize(6);
 
         imuMeasure = Eigen::VectorXd::Zero(9);
-        wheelMeasure = Eigen::VectorXd::Zero(2);
+        wheelMeasure = Eigen::VectorXd::Zero(3);
         lidarMeasure = Eigen::VectorXd::Zero(6);
         visualMeasure = Eigen::VectorXd::Zero(6);
 
         E_imu.resize(9,9);
-        E_wheel.resize(2,2);
+        E_wheel.resize(3,3);
         E_lidar.resize(6,6);
         E_visual.resize(6,6);
 
         E_imu = Eigen::MatrixXd::Zero(9,9);
         E_lidar = Eigen::MatrixXd::Zero(6,6);
         E_visual = Eigen::MatrixXd::Zero(6,6);
-        E_wheel = Eigen::MatrixXd::Zero(2,2);
+        E_wheel = Eigen::MatrixXd::Zero(3,3);
 
         X.resize(12);
         P.resize(12,12);
         X = Eigen::VectorXd::Zero(12);
         P = Eigen::MatrixXd::Zero(12,12);
+
+        // IMU orientation correction -- erase this
+        R_init = Eigen::Matrix3d::Identity();
     }
 
     void filter_initialization(){
@@ -275,8 +286,21 @@ public:
     // callbacks
     //----------
     void imuHandler(const sensor_msgs::Imu::ConstPtr& imuIn){
-        double timeL = ros::Time::now().toSec();
+        double timeL = ros::Time::now().toSec();   
 
+        // roll, pitch and yaw 
+        double roll, pitch, yaw;
+        geometry_msgs::Quaternion orientation = imuIn->orientation;
+        tf::Matrix3x3 m(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w));
+        // m.getRPY(roll, pitch, yaw);
+        
+        // Para converter para Eigen::Matrix3d:
+        Eigen::Matrix3d R_curr, R_new;
+        R_curr << m[0][0], m[0][1], m[0][2],
+                m[1][0], m[1][1], m[1][2],
+                m[2][0], m[2][1], m[2][2];
+
+        // first matrix -- erase this
         // time
         if (imuActivated){
             imuTimeLast = imuTimeCurrent;
@@ -285,12 +309,35 @@ public:
             imuTimeCurrent = imuIn->header.stamp.toSec();
             imuTimeLast = imuTimeCurrent + 0.001;
             imuActivated = true;
-        }       
+            R_init = R_curr;
+        } 
+
+        R_new = R_init.transpose()*R_curr;
+        // 2. Criar uma matriz tf::Matrix3x3 temporária
+        tf::Matrix3x3 m_temp;
+
+        // 3. Converter os dados do Eigen para o TF
+        // Note que o Eigen usa R(linha, coluna)
+        m_temp.setValue(R_new(0,0), R_new(0,1), R_new(0,2),
+                        R_new(1,0), R_new(1,1), R_new(1,2),
+                        R_new(2,0), R_new(2,1), R_new(2,2));
+
+        m_temp.getRPY(roll, pitch, yaw);
+
+        // time
+        // if (imuActivated){
+        //     imuTimeLast = imuTimeCurrent;
+        //     imuTimeCurrent = imuIn->header.stamp.toSec();
+        // }else{
+        //     imuTimeCurrent = imuIn->header.stamp.toSec();
+        //     imuTimeLast = imuTimeCurrent + 0.001;
+        //     imuActivated = true;
+        // }       
 
         // roll, pitch and yaw 
-        double roll, pitch, yaw;
-        geometry_msgs::Quaternion orientation = imuIn->orientation;
-        tf::Matrix3x3(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w)).getRPY(roll, pitch, yaw);
+        // double roll, pitch, yaw;
+        // geometry_msgs::Quaternion orientation = imuIn->orientation;
+        // tf::Matrix3x3(tf::Quaternion(orientation.x, orientation.y, orientation.z, orientation.w)).getRPY(roll, pitch, yaw);
 
         // measure
         imuMeasure.block(0,0,3,1) << imuIn->linear_acceleration.x, imuIn->linear_acceleration.y, imuIn->linear_acceleration.z;
@@ -312,7 +359,7 @@ public:
 
         // time
         imu_dt = imuTimeCurrent - imuTimeLast;
-        imu_dt = 0.01;
+        // imu_dt = 0.01;
 
         // header
         double timediff = ros::Time::now().toSec() - timeL + imuTimeCurrent;
@@ -337,11 +384,34 @@ public:
         } 
 
         // measure
-        wheelMeasure << 1.0*wheelOdometry->twist.twist.linear.x, wheelOdometry->twist.twist.angular.z;
+        wheelMeasure << -0.705*wheelOdometry->twist.twist.linear.x, wheelOdometry->twist.twist.linear.y, wheelOdometry->twist.twist.angular.z;
 
-        // covariance
-        E_wheel(0,0) = wheelG*wheelOdometry->twist.covariance[0];
-        E_wheel(1,1) = 100*wheelOdometry->twist.covariance[35];
+        // wheel covariance
+        switch (experiment) {
+            case 1:
+                // equal
+                E_wheel(0,0) = 0.02; 
+                E_wheel(1,1) = 1e-4;
+                E_wheel(2,2) = 0.05;
+                break;
+            case 2:
+                // wheel > LiDAR
+                E_wheel(0,0) = 0.02; 
+                E_wheel(1,1) = 0.01;
+                E_wheel(2,2) = 0.05;
+                break;
+            case 3:
+                // wheel < LiDAR
+                E_wheel(0,0) = 0.00001; 
+                E_wheel(1,1) = 1e-4;
+                E_wheel(2,2) = 0.005;
+                break;
+            default:
+                // code to execute if no cases match
+                E_wheel(0,0) = wheelGVx*wheelOdometry->twist.covariance[0] + wheelOffset; 
+                E_wheel(1,1) = wheelGVy*wheelOdometry->twist.covariance[7];
+                E_wheel(2,2) = wheelGWz*wheelOdometry->twist.covariance[35];
+        }      
 
         // time
         wheel_dt = wheelTimeCurrent - wheelTimeLast;
@@ -377,15 +447,44 @@ public:
         lidarMeasure.block(3,0,3,1) << roll, pitch, yaw;    
 
         // covariance
-        E_lidar(0,0) = laserOdometry->pose.covariance[0];
-        E_lidar(0,1) = laserOdometry->pose.covariance[1];
-        E_lidar(0,2) = laserOdometry->pose.covariance[2];
-        E_lidar(1,0) = laserOdometry->pose.covariance[3];
-        E_lidar(1,1) = laserOdometry->pose.covariance[4];
-        E_lidar(1,2) = laserOdometry->pose.covariance[5];
-        E_lidar(2,0) = laserOdometry->pose.covariance[6];
-        E_lidar(2,1) = laserOdometry->pose.covariance[7];
-        E_lidar(2,2) = laserOdometry->pose.covariance[8];
+
+        switch (experiment) {
+            case 1:
+                // equal
+                E_lidar(0,0) = 0.02;  // vx
+                E_lidar(1,1) = 1e-4;  // vy            
+                E_lidar(2,2) = 0.02;
+                E_lidar(3,3) = 1e-5;
+                E_lidar(4,4) = 1e-5;
+                E_lidar(5,5) = 0.05;  // wz
+                break;
+            case 2:
+                // wheel > LiDAR
+                E_lidar(0,0) = 0.00001;  // vx
+                E_lidar(1,1) = 1e-4;  // vy            
+                E_lidar(2,2) = 0.02;
+                E_lidar(3,3) = 1e-5;
+                E_lidar(4,4) = 1e-5;
+                E_lidar(5,5) = 0.005;  // wz
+                break;
+            case 3:
+                // wheel < LiDAR
+                E_lidar(0,0) = 0.02;  // vx
+                E_lidar(1,1) = 0.01;  // vy            
+                E_lidar(2,2) = 0.02;
+                E_lidar(3,3) = 1e-5;
+                E_lidar(4,4) = 1e-5;
+                E_lidar(5,5) = 0.05;  // wz
+                break;
+            default:
+                // code to execute if no cases match
+                E_lidar(0,0) = laserOdometry->twist.covariance[0];
+                E_lidar(1,1) = laserOdometry->twist.covariance[7];
+                E_lidar(2,2) = 40*laserOdometry->twist.covariance[14] + 30;
+                E_lidar(3,3) = 40*laserOdometry->twist.covariance[21] + 30;
+                E_lidar(4,4) = 40*laserOdometry->twist.covariance[28] + 30;
+                E_lidar(5,5) = laserOdometry->twist.covariance[35];
+        }
 
         // for adaptive covariance
         double corner = double(laserOdometry->twist.twist.linear.x);
@@ -431,15 +530,12 @@ public:
             visualMeasure.block(3,0,3,1) << roll, pitch, yaw;    
 
             // covariance
-            E_visual(0,0) = visualOdometry->pose.covariance[0];
-            E_visual(0,1) = visualOdometry->pose.covariance[1];
-            E_visual(0,2) = visualOdometry->pose.covariance[2];
-            E_visual(1,0) = visualOdometry->pose.covariance[3];
-            E_visual(1,1) = visualOdometry->pose.covariance[4];
-            E_visual(1,2) = visualOdometry->pose.covariance[5];
-            E_visual(2,0) = visualOdometry->pose.covariance[6];
-            E_visual(2,1) = visualOdometry->pose.covariance[7];
-            E_visual(2,2) = visualOdometry->pose.covariance[8];
+            E_visual(0,0) = visualOdometry->twist.covariance[0];
+            E_visual(1,1) = visualOdometry->twist.covariance[7];
+            E_visual(2,2) = visualOdometry->twist.covariance[14];
+            E_visual(3,3) = visualOdometry->twist.covariance[21];
+            E_visual(4,4) = visualOdometry->twist.covariance[28];
+            E_visual(5,5) = visualOdometry->twist.covariance[35];
 
             // time
             visual_dt = visualTimeCurrent - visualTimeLast;
@@ -499,15 +595,12 @@ public:
                 visualMeasure.block(3,0,3,1) << roll, pitch, yaw;    
 
                 // covariance
-                E_visual(0,0) = visualOdometry->pose.covariance[0];
-                E_visual(0,1) = visualOdometry->pose.covariance[1];
-                E_visual(0,2) = visualOdometry->pose.covariance[2];
-                E_visual(1,0) = visualOdometry->pose.covariance[3];
-                E_visual(1,1) = visualOdometry->pose.covariance[4];
-                E_visual(1,2) = visualOdometry->pose.covariance[5];
-                E_visual(2,0) = visualOdometry->pose.covariance[6];
-                E_visual(2,1) = visualOdometry->pose.covariance[7];
-                E_visual(2,2) = visualOdometry->pose.covariance[8];
+                E_visual(0,0) = visualOdometry->twist.covariance[0];
+                E_visual(1,1) = visualOdometry->twist.covariance[7];
+                E_visual(2,2) = visualOdometry->twist.covariance[14];
+                E_visual(3,3) = visualOdometry->twist.covariance[21];
+                E_visual(4,4) = visualOdometry->twist.covariance[28];
+                E_visual(5,5) = visualOdometry->twist.covariance[35];
 
                 // time
                 visual_dt = visualTimeCurrent - visualTimeLast;
@@ -681,16 +774,21 @@ int main(int argc, char** argv)
         nh_.param("/adaptive_filter/filterFreq", AF.filterFreq, std::string("l"));
         nh_.param("/adaptive_filter/freq", AF.freq, double(200.0));
 
-        nh_.param("/adaptive_filter/wheelG", AF.wheelG, float(0.05));
+        // nh_.param("/adaptive_filter/wheelG", AF.wheelG, float(0.05));
         nh_.param("/adaptive_filter/imuG", AF.imuG, float(0.1));
 
         nh_.param("/adaptive_filter/alpha_lidar", AF.alpha_lidar, double(0.98));
         nh_.param("/adaptive_filter/alpha_visual", AF.alpha_visual, double(0.98));
 
         nh_.param("/adaptive_filter/lidarG", AF.lidarG, float(1000));
-        nh_.param("/adaptive_filter/wheelG", AF.wheelG, float(0.05));
+        nh_.param("/adaptive_filter/wheelGVx", AF.wheelGVx, float(1.0));
+        nh_.param("/adaptive_filter/wheelGVy", AF.wheelGVy, float(1.0));
+        nh_.param("/adaptive_filter/wheelGWz", AF.wheelGWz, float(1.0));
+        nh_.param("/adaptive_filter/wheelOffset", AF.wheelOffset, float(0.0));
         nh_.param("/adaptive_filter/visualG", AF.visualG, float(0.05));
         nh_.param("/adaptive_filter/imuG", AF.imuG, float(0.1));
+
+        nh_.param("/adaptive_filter/experiment", AF.experiment, int(0));
 
         nh_.param("/adaptive_filter/gamma_vx", AF.gamma_vx, float(0.05));
         nh_.param("/adaptive_filter/gamma_omegaz", AF.gamma_omegaz, float(0.01));
