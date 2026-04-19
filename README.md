@@ -1,53 +1,253 @@
-# Adaptive Filter Package
+# adaptive_odom_filter
 
+ROS 2 package for odometry fusion using wheel odometry, IMU, LiDAR odometry, and optional visual odometry.
 
-Adaptive Filter Package is a filter that provides sensor fusion for the best accuracy in LiDAR SLAM odometry input, fusing wheel odometry with inertial sensor data and LiDAR odometry. This filter is part of the EKF-LOAM package, that is an update of the LeGO-LOAM, and has the adaptive covariances for wheel and LiDAR odometry. Depending on the angular velocity of the robot, two matrices are considered for wheel odometry. The LiDAR odometry covariance matrix depends on the number of edge and planar features identified in the environment.
+The package provides two filter pipelines:
 
-## The System:
+- `adaptive_odom_filter_node` / `EKFAdaptiveFilter`: adaptive EKF for wheel + IMU + LiDAR, with optional visual odometry
+- `EKFRobustAdaptiveFilter`: robust EKF path with extended state and sensor extrinsic outputs
 
-LiDAR SLAM techniques accumulate significant errors when estimating the device's position in environments with few geometric features, such as tunnels, galleries, or even extensive and homogeneous corridors. These environments characterize several places in which the EspeleoRobô is supposed to operate. Aiming to correct eventual errors in the odometry and map computation, we use a filter to incorporate the measurement of wheel speed with the IMU data in the LiDAR SLAM. This information is used between the stages of the Back-End and Front-End of the SLAM. Fig.1 depicts the proposed structure.
+The ROS 2 branch keeps the package structure, launch flow, and runtime integration in ROS 2, while porting the latest filter logic that was added in `master`.
 
+## Package layout
 
-<p align='center'>
-    <img src="ReadMe/ekf_loam.png" alt="center" width="550"/>
-</p>
+- `src/EKFAdaptiveFilter.cpp`: ROS 2 adaptive EKF node
+- `src/EKFRobustAdaptiveFilter.cpp`: ROS 2 robust EKF node
+- `src/ekf_adaptive_tools.cpp`: adaptive EKF core
+- `src/adaptive_robust_ekf.cpp`: robust EKF core
+- `config/adaptive_filter_parameters.yaml`: adaptive filter parameters
+- `config/adaptive_robust_filter_parameters.yaml`: robust filter parameters
+- `launch/*.launch.py`: ROS 2 launch entry points
 
+## Build
 
-In environments with few geometric features, LiDAR odometry presents errors in estimating the pose propagated to the LiDAR mapping, causing misalignment between the set of points **L**[k] and the map **M**[k-1], and generating map deformations and incorrect pose estimations **x_M**[k]. Therefore, our strategy uses an EKF to correct the pose estimate **x_L**[k] by combining LiDAR odometry with wheel odometry and IMU data. Thus, we propose an adaptive covariance matrix for LiDAR odometry according to the number of features identified in the environment. The new corrected pose is used in the mapping module to align the set **L**[k] with the map. Likewise, the corrected information is also used to integrate the transformations that generate the estimated output pose. The EKF integrated with the LiDAR SLAM allows to correct the pose estimation and the map in low feature environments.
+Place the package inside a ROS 2 workspace `src/` folder and build with `colcon`:
 
-
-## Parameters
-
-This package has some configurable parameters, which can be found in the folder:
-
-
+```bash
+colcon build --symlink-install
 ```
-/adaptive_filter/Config/adaptive_filter_parameters.yaml
+
+Source the workspace after a successful build:
+
+```bash
+source install/setup.bash
 ```
 
-The parameters of this package are:
+## Main dependencies
 
+- ROS 2 Jazzy or compatible ament workspace
+- `rclcpp`
+- `nav_msgs`
+- `sensor_msgs`
+- `geometry_msgs`
+- `tf2`, `tf2_ros`, `tf2_geometry_msgs`
+- `rtabmap_msgs`
+- `Eigen3`
 
-- Boolean Variables:
+Optional:
 
-> - `enableFilter`: Boolean variable to enable or disable the filter;
-> - `enableImu`: Boolean variable to enable or disable the IMU data;
-> - `enableWheel`: Boolean variable to enable or disable the wheel odometry;
-> - `enableLidar`: Boolean variable to enable or disable the LiDAR odometry;
+- `cloud_msgs`
+  The robust node can subscribe to LiDAR feature counts when the ROS 2 `cloud_msgs` package is available.
 
-- Set Frequency:
+## Running the package
 
-> - `enableFreq`: Char variable to set the frequency of the output, where "l" represent the same frenquency of the LiDAR odmoetry, "w" the same frequency of the wheel odometry and "i" the same frequency of the IMU data.
+Adaptive EKF:
 
-## Input and Output:
+```bash
+ros2 launch adaptive_odom_filter adaptive_filter_odom.launch.py
+```
 
-This package has three inputs and one output in the form of a ROS topic. Input topic names are defined below in which:
+Robust EKF:
 
-- `/odom`: is the odomtry topic of the wheel odometry;
-- `/imu/data`: is the IMU sensor message topics of the inertial sensor with the orientation filtered;
-- `/ekf_loam/laser_odom_to_init`: is the odometry topic of the LiDAR odometry.
+```bash
+ros2 launch adaptive_odom_filter adaptive_robust_filter_odom.launch.py
+```
 
-The output topic name is defined as:
+Fast test path with fake publishers:
 
-- `/ekf_loam/ad\ptiveFilter`: is the odomtry topic of the wheel odometry;
+```bash
+ros2 launch adaptive_odom_filter adaptive_filter_odom.launch.py test:=true
+```
 
+## Inputs and outputs
+
+### Adaptive EKF inputs
+
+Default topics are configured in `config/adaptive_filter_parameters.yaml`.
+
+- IMU: `/imu/data`
+- wheel odometry: `/odom_with_cov`
+- LiDAR odometry: `/ekf_loam/laser_odom_with_cov`
+- tracking visual odometry: `/camera/odom`
+- depth visual odometry: `/camera/odom`
+- stereo / RGB image topics for visual confidence estimation
+
+### Adaptive EKF output
+
+- fused odometry: `/ekf_loam/filter_odom_to_init`
+
+### Robust EKF inputs
+
+Default topics are configured in `config/adaptive_robust_filter_parameters.yaml`.
+
+- IMU: `/imu/data`
+- wheel odometry: `/odom_with_cov`
+- LiDAR odometry: `/ekf_loam/laser_odom_with_cov`
+- LiDAR features: `/ekf_loam/features_cloud_info`
+
+### Robust EKF outputs
+
+- fused odometry: `/ekf_loam/filter_odom_to_init`
+- LiDAR extrinsic pose: `/lidar_extrinsic_pose`
+- IMU extrinsic pose: `/imu_extrinsic_pose`
+
+## Key parameters to tune
+
+### Common enable flags
+
+- `enableFilter`
+- `enableImu`
+- `enableWheel`
+- `enableLidar`
+- `enableVisual`
+
+Use these first to isolate sensors during bring-up and debugging.
+
+### Timing and output behavior
+
+- `freq`
+  Filter update frequency.
+- `filterFreq`
+  Legacy output selection flag kept for compatibility.
+
+If the filter becomes noisy or unstable under load, reduce `freq` first and validate sensor timestamps.
+
+### Adaptive EKF sensor gains
+
+- `lidarG`
+  Global LiDAR covariance scaling.
+- `imuG`
+  IMU orientation covariance scaling.
+- `visualG`
+  Visual odometry covariance scaling.
+- `wheelGVx`
+- `wheelGVy`
+- `wheelGWz`
+- `wheelOffset`
+
+The split wheel gains are important in the ROS 2 branch because wheel velocity and yaw-rate are handled independently.
+
+### Wheel adaptive covariance parameters
+
+- `gamma_vx`
+- `gamma_omegaz`
+- `delta_vx`
+- `delta_omegaz`
+- `wheel_type_func`
+
+These parameters affect how strongly wheel covariance reacts to disagreement between wheel odometry and IMU yaw rate.
+
+### LiDAR / visual covariance modes
+
+- `lidar_type_func`
+- `visual_type_func`
+- `alpha_lidar`
+- `alpha_visual`
+
+These control indirect odometry smoothing and covariance selection.
+
+### Adaptive EKF experiment mode
+
+- `experiment`
+
+This parameter is used to switch covariance experiments in the adaptive path. Keep it at `0` unless you are intentionally testing covariance weighting behavior.
+
+### Robust EKF parameters
+
+Important robust-path parameters are defined in `config/adaptive_robust_filter_parameters.yaml`:
+
+- `lidarG`
+- `wheelG`
+- `imuG`
+- `gamma_vx`
+- `gamma_omegaz`
+- `delta_vx`
+- `delta_omegaz`
+- `lidar_type_func`
+- `wheel_type_func`
+
+The robust path uses a different state model and fixed sensor covariance handling in key callbacks, so tune it independently from the adaptive path.
+
+## Tuning guide
+
+Recommended order:
+
+1. Validate timestamps and frames first.
+2. Run with `enableVisual:=false` unless visual odometry is already known to be stable.
+3. Tune `lidarG` and `imuG` before touching wheel adaptive terms.
+4. Tune `wheelGVx`, `wheelGVy`, and `wheelGWz` separately.
+5. Only then adjust `gamma_*` and `delta_*`.
+
+Symptoms and likely causes:
+
+- fused odometry follows wheel motion too aggressively
+  Lower wheel gains or increase wheel covariance terms.
+- fused odometry ignores wheel constraints
+  Increase wheel gains or reduce LiDAR dominance.
+- yaw oscillation or fast heading jumps
+  Recheck wheel sign convention, IMU orientation covariance, and `imuG`.
+- filter stalls waiting for data
+  Check sensor timestamps and whether the enabled inputs are actually publishing.
+
+## Common build and runtime issues
+
+### CMake cache path mismatch
+
+Error example:
+
+```text
+CMake Error: The current CMakeCache.txt directory ... is different than the directory ... where CMakeCache.txt was created
+```
+
+Cause:
+
+- stale generated `build/`, `install/`, or `log/` content from another machine or workspace path
+
+Fix:
+
+```bash
+rm -rf build install log
+colcon build --symlink-install
+```
+
+This branch now keeps generated artifacts out of version control, so a fresh clone should not hit this by default.
+
+### Missing `cloud_msgs`
+
+If the workspace does not provide ROS 2 `cloud_msgs`, the package still builds, but the robust node will not receive LiDAR feature count messages from that package.
+
+### Topic mismatch
+
+If the node starts but the filter does not move, check:
+
+- topic names in the YAML files
+- topic names in the launch file arguments
+- actual published topic names in the robot workspace
+
+### Frame mismatch
+
+If the fused odometry is valid numerically but wrong in downstream consumers, check:
+
+- `odom_frame_id`
+- `base_frame_id`
+- the frames used by your wheel, IMU, and LiDAR pipelines
+
+## Notes
+
+- The robust path publishes estimated sensor extrinsics from the filter state.
+- The adaptive path supports optional visual odometry, but visual inputs should only be enabled after topic, covariance, and timing validation.
+- The package includes a fake publisher script for fast integration testing, not for performance benchmarking.
+
+## Change tracking
+
+Branch-level changes are recorded in [CHANGELOG.md](./CHANGELOG.md).
