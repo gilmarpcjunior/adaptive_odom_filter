@@ -3,8 +3,8 @@
 //Description: This file is responsible for merging the wheel odometry with the IMU data and the Fast-LIO2 odometry.
 //Milestones: 
 //
-//             Date: September 22, 2025
-//             Description: New version of the code including visual odometry measurement.
+//             Date: Febraury 24, 2026
+//             Description: New version of the code.
 //             Members: Gilmar Pereira da Cruz Júnior and Gabriel Malaquias
 //             E-mails: gilmarpcruzjunior@gmail.com, gmdeoliveira@ymail.com
 //=======================================================================================================================================
@@ -18,14 +18,14 @@ using namespace std;
 //-----------------------------
 // Adaptive EKF class
 //-----------------------------
-class AdaptiveOdomFilter{
+class AdaptiveRobustEKF{
 
 private:
     // Measure
-    Eigen::VectorXd _imuMeasure, _wheelMeasure, _lidarMeasure, _lidarMeasureL, _visualMeasure, _visualMeasureL;
+    Eigen::VectorXd _imuMeasure, _wheelMeasure, _lidarMeasure, _lidarMeasureL;
 
     // Measure Covariance
-    Eigen::MatrixXd _E_imu, _E_wheel, _E_lidar, _E_lidarL, _E_visual, _E_visualL, _E_pred;
+    Eigen::MatrixXd _E_imu, _E_wheel, _E_lidar, _E_lidarL, _E_pred;
 
     // States and covariances
     Eigen::VectorXd _X, _V;
@@ -38,29 +38,28 @@ private:
     double _imu_dt;
     double _wheel_dt;
     double _lidar_dt;
-    double _visual_dt;
+
+    double _eps;
+    double _epsR;
 
     // number of state or measure vectors
-    int _N_STATES = 12;
-    int _N_IMU = 9; 
+    // x = [pos[3] ori[3] vel[3] acc[3] ang[3] biasL[6] biasW[3] biasI[6] pose_lidar_robo[6] pose_imu_robo[6]]
+    int _N_STATES = 42; //42 or 57
+    int _N_IMU = 6; 
     int _N_WHEEL = 3; 
     int _N_LIDAR = 6;
-    int _N_VISUAL = 6;
 
-    alphaBetaFilter _velocityLiDARFilter;
-    alphaBetaFilter _velocityVisualFilter;
+    // alphabetaFiltr
+    alphaBetaFilter _velocityFilter;
     
     // boolean
     bool _imuActivated;
     bool _wheelActivated;
     bool _lidarActivated;
-    bool _visualActivated;
     bool _imuNew;
     bool _wheelNew;
     bool _lidarNew;
-    bool _visualNew;
     bool _velComp;
-    bool _firstVisual;
     bool _firstLidar;
     bool _computing;
 
@@ -78,6 +77,34 @@ private:
 
     void covariance_initialization();
 
+    inline double angularResidual(double a);
+
+    inline Eigen::Vector3d angularResidualVec(const Eigen::Vector3d& a);
+
+    inline Eigen::Matrix3d skewSymmetric(const Eigen::Vector3d& v);
+
+    inline Eigen::Matrix3d eulerMatrix(const Eigen::Vector3d& a);
+
+    inline Eigen::Vector3d leverArmEffect(const Eigen::Vector3d& omega, const Eigen::Vector3d& p_offset);
+
+    inline Eigen::Vector3d dRv_dphi(double phi, double theta, double psi, const Eigen::Vector3d& v);
+
+    inline Eigen::Vector3d dRv_dtheta(double phi, double theta, double psi, const Eigen::Vector3d& v);
+
+    inline Eigen::Vector3d dRv_dpsi(double phi, double theta, double psi, const Eigen::Vector3d& v);
+
+    inline Eigen::Matrix3d eulerKinematicMatrix(double phi, double theta);
+
+    inline Eigen::Vector3d dJw_dphi(double phi, double theta, const Eigen::Vector3d& w);
+
+    inline Eigen::Vector3d dJw_dtheta(double phi, double theta, const Eigen::Vector3d& w);
+
+    Eigen::Matrix3d dR_dphi(double phi, double theta, double psi);
+
+    Eigen::Matrix3d dR_dtheta(double phi, double theta, double psi);
+    
+    Eigen::Matrix3d dR_dpsi(double phi, double theta, double psi);
+
     //-----------------
     // predict function
     //-----------------
@@ -92,23 +119,31 @@ private:
 
     void correction_lidar_stage(double dt);
 
-    void correction_visual_stage(double dt);
+    void correction_lidar_stage_old(double dt);
 
     //---------
     // Models
     //---------
     VectorXd f_prediction_model(VectorXd x, double dt);
 
-    VectorXd indirect_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type);
+    VectorXd indirect_odometry_measurement(VectorXd u, VectorXd ul, double dt);
+
+    VectorXd indirect_odometry_measurement_new(VectorXd u, VectorXd ul, double dt);
 
     //----------
     // Jacobians
     //----------
     MatrixXd jacobian_state(VectorXd x, double dt);
 
-    MatrixXd jacobian_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type);
+    MatrixXd jacobian_odometry_measurement(VectorXd u, VectorXd ul, double dt);
 
-    MatrixXd jacobian_odometry_measurementL(VectorXd u, VectorXd ul, double dt, char type);
+    MatrixXd jacobian_odometry_measurementL(VectorXd u, VectorXd ul, double dt);
+
+    Eigen::MatrixXd analitycal_jacobin_state(const Eigen::VectorXd& x, double dt);
+
+    Eigen::MatrixXd calculateJacobianIMU(const Eigen::VectorXd& x);
+
+    Eigen::MatrixXd calculateJacobianLidar(const Eigen::VectorXd& x);
 
     //----------------
     // run
@@ -120,8 +155,6 @@ private:
     //---------------------------
     MatrixXd adaptive_covariance(double fCorner, double fSurf);
 
-    MatrixXd adaptive_visual_covariance(double IntensityIn);
-
     MatrixXd wheelOdometryAdaptiveCovariance(double omegaz_wheel_odom, double omegaz_imu);
 
 
@@ -132,24 +165,16 @@ public:
     bool enableImu;
     bool enableWheel;
     bool enableLidar;
-    bool enableVisual;
     double freq;
 
     float alpha_lidar;
-    float alpha_visual;
 
     //------------------
     // Covariance settings
     //------------------
     float lidarG;
-    float visualG;
-    float wheelGVx;
-    float wheelGVy;
-    float wheelGWz;
-    float wheelOffset;
+    float wheelG;
     float imuG;
-
-    int experiment;
 
     float gamma_vx;
     float gamma_omegaz;
@@ -157,7 +182,6 @@ public:
     float delta_omegaz;
 
     int lidar_type_func;
-    int visual_type_func;
     int wheel_type_func;
 
     // adaptive covariance - lidar odometry
@@ -172,8 +196,8 @@ public:
     //------------------
     // Constructor -  Destructor
     //------------------   
-    AdaptiveOdomFilter();
-    ~AdaptiveOdomFilter();
+    AdaptiveRobustEKF();
+    ~AdaptiveRobustEKF();
     
     //----------
     // Datas - ok
@@ -183,8 +207,6 @@ public:
     void correction_wheel_data(VectorXd wheel_odom, MatrixXd E_wheel, double dt, double omegaz_imu);
 
     void correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar, double dt, double corner, double surf);
-
-    void correction_visual_data(VectorXd visual_odom, MatrixXd E_visual, double dt, double averageIntensity);
 
     //------------------
     // filter control

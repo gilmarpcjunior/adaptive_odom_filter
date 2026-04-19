@@ -10,7 +10,7 @@
 //=======================================================================================================================================
 
 #include <adaptive_odom_filter/ekf_adaptive_tools.h>
-// +++ ROS 2 addition (for rclcpp::Rate, rclcpp::Clock, rclcpp::ok) +++
+#include <adaptive_odom_filter/alphaBetaFilter.h>
 #include <rclcpp/rclcpp.hpp>
 
 using namespace Eigen;
@@ -135,9 +135,11 @@ void AdaptiveOdomFilter::initialization(){
     _V = _X;
     _PV = _P;
 
-    // visual covariances variables
-    minIntensity = 0.0; // only to teste
-    maxIntensity = 1.0; // only to teste
+    minIntensity = 0.0;
+    maxIntensity = 1.0;
+
+    _velocityLiDARFilter.init(_N_LIDAR, 0.8, 0.2);
+    _velocityVisualFilter.init(_N_VISUAL, 0.8, 0.2);
 }
 
 void AdaptiveOdomFilter::covariance_initialization(){
@@ -148,8 +150,12 @@ void AdaptiveOdomFilter::covariance_initialization(){
 
     lidarG = 1.0;
     visualG = 1.0;
-    wheelG = 1.0;
+    wheelGVx = 1.0;
+    wheelGVy = 1.0;
+    wheelGWz = 1.0;
+    wheelOffset = 0.0;
     imuG = 1.0;
+    experiment = 0;
 
     // adptive covariance constants - lidar odometry
     nCorner = 500.0; // 7000
@@ -192,20 +198,22 @@ void AdaptiveOdomFilter::prediction_stage(double dt){
 // correction stage
 //-----------------
 void AdaptiveOdomFilter::correction_wheel_stage(double dt){
+    (void)dt;
     Eigen::VectorXd Y(_N_WHEEL), hx(_N_WHEEL);
     Eigen::MatrixXd H(_N_WHEEL,_N_STATES), K(_N_STATES,_N_WHEEL), E(_N_WHEEL,_N_WHEEL), S(_N_WHEEL,_N_WHEEL);
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
-    // measure model of wheel odometry (only foward linear velocity)
     hx(0) = _X(6);
-    hx(1) = _X(11);
+    hx(1) = _X(7);
+    hx(2) = _X(11);
     // measurement
     Y = _wheelMeasure;
 
     // Jacobian of hx with respect to the states
     H = Eigen::MatrixXd::Zero(_N_WHEEL,_N_STATES);
     H(0,6) = 1; 
-    H(1,11) = 1;
+    H(1,7) = 1;
+    H(2,11) = 1;
 
     // covariance matrices
     E << _E_wheel;
@@ -224,6 +232,7 @@ void AdaptiveOdomFilter::correction_wheel_stage(double dt){
 }
 
 void AdaptiveOdomFilter::correction_imu_stage(double dt){
+    (void)dt;
     Eigen::Matrix3d S, E;
     Eigen::Vector3d Y, hx;
     Eigen::MatrixXd H(3,_N_STATES), K(_N_STATES,3);
@@ -256,7 +265,7 @@ void AdaptiveOdomFilter::correction_imu_stage(double dt){
     residues(2) = atan2(sin(Y(2) - hx(2)), cos(Y(2) - hx(2)));
     KR = K*residues;
 
-    _X.block(0,0,3,1) = _X.block(0,0,3,1) + KR.block(0,0,3,1);
+    // Position correction is intentionally suppressed here to match master logic.
     _X(3) = atan2(sin(_X(3) + KR(3)), cos(_X(3) + KR(3)));
     _X(4) = atan2(sin(_X(4) + KR(4)), cos(_X(4) + KR(4)));
     _X(5) = atan2(sin(_X(5) + KR(5)), cos(_X(5) + KR(5)));
@@ -292,7 +301,7 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
     G = jacobian_odometry_measurement(_lidarMeasure, _lidarMeasureL, dt, 'l');
     Gl = jacobian_odometry_measurementL(_lidarMeasure, _lidarMeasureL, dt, 'l');
 
-    Q =  G*_E_lidar*G.transpose() + Gl*_E_lidarL*Gl.transpose();
+    Q = _E_lidar;
 
     // Kalman's gain
     S = H*_P*H.transpose() + Q;
@@ -360,11 +369,11 @@ VectorXd AdaptiveOdomFilter::f_prediction_model(VectorXd x, double dt){
     // state: {x, y, z, roll, pitch, yaw, vx, vy, vz, wx, wy, wz}
     //        {         (world)         }{        (body)        }
     Eigen::Matrix3d R, Rx, Ry, Rz, J;
-    Eigen::VectorXd xp(_N_STATES), Axdt(_N_STATES), xNew(_N_STATES);
+    Eigen::VectorXd xp(_N_STATES), Axdt(6), xNew(_N_STATES);
     Eigen::MatrixXd A(6,6);
 
-    xNew = x; // robo diferencial - monociclo; para outros modelos alterar aqui
-    xNew.block(7,0,3,1) = Eigen::Vector3d::Zero(); // vy, vz, wx, wy igual a zero.
+    xNew = x;
+    xNew.block(7,0,4,1) = Eigen::VectorXd::Zero(4);
 
     // Rotation matrix
     Rx = Eigen::AngleAxisd(x(3), Eigen::Vector3d::UnitX());
@@ -456,9 +465,21 @@ VectorXd AdaptiveOdomFilter::indirect_odometry_measurement(VectorXd u, VectorXd 
     A.block(0,0,3,3) = R.transpose();
     A.block(3,3,3,3) = J.inverse();
 
-    up = A*u_diff/dt;
+    up = A * u_diff / dt;
 
-    return up;
+    Eigen::VectorXd filtered = up;
+    switch (type) {
+        case 'l':
+            filtered = _velocityLiDARFilter.update(up, dt);
+            break;
+        case 'v':
+            filtered = _velocityVisualFilter.update(up, dt);
+            break;
+        default:
+            break;
+    }
+
+    return filtered;
 
 }
 
@@ -472,7 +493,7 @@ MatrixXd AdaptiveOdomFilter::jacobian_state(VectorXd x, double dt){
     f0 = f_prediction_model(x, dt);
 
     double delta = 0.0001;
-    for (size_t i = 0; i < _N_STATES; i++){
+    for (int i = 0; i < _N_STATES; ++i){
         x_plus = x;
         x_plus(i) = x_plus(i) + delta;
 
@@ -502,7 +523,7 @@ MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurement(VectorXd u, VectorXd 
             f0 = indirect_odometry_measurement(u, ul, dt, 'l');
 
             delta = 0.0000001;
-            for (size_t i = 0; i < _N_LIDAR; i++){
+            for (int i = 0; i < _N_LIDAR; ++i){
                 u_plus = u;
                 u_plus(i) = u_plus(i) + delta;
 
@@ -524,7 +545,7 @@ MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurement(VectorXd u, VectorXd 
             f0 = indirect_odometry_measurement(u, ul, dt, 'v');
 
             delta = 0.0000001;
-            for (size_t i = 0; i < _N_VISUAL; i++){
+            for (int i = 0; i < _N_VISUAL; ++i){
                 u_plus = u;
                 u_plus(i) = u_plus(i) + delta;
 
@@ -560,7 +581,7 @@ MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurementL(VectorXd u, VectorXd
             f0 = indirect_odometry_measurement(u, ul, dt, 'l');
 
             delta = 0.0000001;
-            for (size_t i = 0; i < _N_LIDAR; i++){
+            for (int i = 0; i < _N_LIDAR; ++i){
                 ul_plus = ul;
                 ul_plus(i) = ul_plus(i) + delta;
 
@@ -582,7 +603,7 @@ MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurementL(VectorXd u, VectorXd
             f0 = indirect_odometry_measurement(u, ul, dt, 'v');
 
             delta = 0.0000001;
-            for (size_t i = 0; i < _N_VISUAL; i++){
+            for (int i = 0; i < _N_VISUAL; ++i){
                 ul_plus = ul;
                 ul_plus(i) = ul_plus(i) + delta;
 
@@ -626,6 +647,7 @@ void AdaptiveOdomFilter::run(){
     wheel_fail_msg = false;
     lidar_fail_msg = false;
     visual_fail_msg = false;
+    bool firstData = false;
 
     while (_running && rclcpp::ok())
     {
@@ -634,27 +656,49 @@ void AdaptiveOdomFilter::run(){
         dt_now = t_now - t_last;
         t_last = t_now;
 
-        if(imu_count >= _imu_dt*1.2) {
+        if (imu_count >= _imu_dt * 1.2) {
             imu_fail_msg = true;
         }
 
-        if(wheel_count >= _wheel_dt*1.2) {
+        if (_imuNew) {
+            imu_fail_msg = false;
+        }
+
+        if (wheel_count >= _wheel_dt * 1.2) {
             wheel_fail_msg = true;
         }
 
-        if(lidar_count >= _lidar_dt*1.2) {
+        if (_wheelNew) {
+            wheel_fail_msg = false;
+        }
+
+        if (lidar_count >= _lidar_dt * 1.2) {
             lidar_fail_msg = true;
         }
 
-        if(visual_count >= _visual_dt*1.2) {
+        if (_lidarNew) {
+            lidar_fail_msg = false;
+        }
+
+        if (visual_count >= _visual_dt * 1.2) {
             visual_fail_msg = true;
         }
 
-        if ((_imuActivated || _wheelActivated || _lidarActivated || _visualActivated) && (!(imu_fail_msg && wheel_fail_msg && lidar_fail_msg && visual_fail_msg))){
-            prediction_stage(dt_now);
+        if (_visualNew) {
+            visual_fail_msg = false;
         }
-        else {
-            // printf("Sensors failed, waiting for new data...\n");
+
+        if ((_imuActivated || _wheelActivated || _lidarActivated || _visualActivated) && !firstData) {
+            firstData = true;
+        }
+
+        if (((_imuActivated && enableImu) || (_wheelActivated && enableWheel) ||
+             (_lidarActivated && enableLidar) || (_visualActivated && enableVisual)) &&
+            (!((imu_fail_msg || !enableImu) && (wheel_fail_msg || !enableWheel) &&
+               (lidar_fail_msg || !enableLidar) && (visual_fail_msg || !enableVisual))) &&
+            firstData) {
+            prediction_stage(dt_now);
+        } else {
             continue;
         }
 
@@ -713,7 +757,12 @@ void AdaptiveOdomFilter::run(){
 //---------------------------
 MatrixXd AdaptiveOdomFilter::adaptive_covariance(double fCorner, double fSurf){
     Eigen::MatrixXd Q(6,6);
-    double cov_x, cov_y, cov_z, cov_phi, cov_psi, cov_theta;
+    double cov_x = l_min;
+    double cov_y = l_min;
+    double cov_z = l_min;
+    double cov_phi = l_min;
+    double cov_psi = l_min;
+    double cov_theta = l_min;
     
     // heuristic
     switch(lidar_type_func){
@@ -748,7 +797,8 @@ MatrixXd AdaptiveOdomFilter::adaptive_covariance(double fCorner, double fSurf){
 
 MatrixXd AdaptiveOdomFilter::adaptive_visual_covariance(double IntensityIn){
     Eigen::MatrixXd Q(6,6);
-    double cov, Intensity;
+    double cov = l_min;
+    double Intensity;
 
     Intensity = (IntensityIn - minIntensity)/(maxIntensity - minIntensity);
     
@@ -774,10 +824,11 @@ MatrixXd AdaptiveOdomFilter::adaptive_visual_covariance(double IntensityIn){
 }
 
 MatrixXd AdaptiveOdomFilter::wheelOdometryAdaptiveCovariance(double omegaz_wheel_odom, double omegaz_imu){
-    Eigen::MatrixXd E(2,2);
+    Eigen::MatrixXd E = Eigen::MatrixXd::Zero(3,3);
 
     E(0,0) = gamma_vx * abs(omegaz_wheel_odom - omegaz_imu) + delta_vx;
-    E(1,1) = gamma_omegaz * abs(omegaz_wheel_odom - omegaz_imu) + delta_omegaz;
+    E(1,1) = wheelOffset;
+    E(2,2) = gamma_omegaz * abs(omegaz_wheel_odom - omegaz_imu) + delta_omegaz;
 
     return E;
 }     
@@ -819,7 +870,7 @@ void AdaptiveOdomFilter::correction_wheel_data(VectorXd wheel_odom, MatrixXd E_w
     if (wheel_type_func==1){
         _E_wheel = E_wheel;
     }else{
-        double omegaz_wheel_odom = wheel_odom(1);
+        double omegaz_wheel_odom = wheel_odom(2);
         _E_wheel = wheelOdometryAdaptiveCovariance(omegaz_wheel_odom, omegaz_imu);
     }
 

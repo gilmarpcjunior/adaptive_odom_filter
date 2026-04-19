@@ -48,8 +48,8 @@ class MultiFakeSources(Node):
         self.declare_parameter('imu_frame', 'imu_link')
 
         self.declare_parameter('camera_odom_topic', '/camera/odom')  # visual odom
-        self.declare_parameter('wheel_odom_topic', '/wheel/odom')
-        self.declare_parameter('lidar_odom_topic', '/lidar/odom')
+        self.declare_parameter('wheel_odom_topic', '/odom_with_cov')
+        self.declare_parameter('lidar_odom_topic', '/ekf_loam/laser_odom_with_cov')
         self.declare_parameter('imu_topic', '/imu/data')
 
         # Requested publication rates

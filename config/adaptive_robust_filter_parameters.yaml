@@ -1,0 +1,35 @@
+adaptive_robust_odom_filter:
+  ros__parameters:
+    enableFilter: true
+    enableImu: true
+    enableWheel: true
+    enableLidar: true
+
+    filterFreq: "l"
+    freq: 200.0
+
+    alpha_lidar: 0.99
+
+    lidarG: 10000000.0
+    wheelG: 10.0
+    imuG: 1.0
+
+    gamma_vx: 0.05
+    gamma_omegaz: 0.01
+    delta_vx: 0.0001
+    delta_omegaz: 0.00001
+
+    lidar_type_func: 2
+    wheel_type_func: 1
+
+    imu_topic: "/imu/data"
+    wheel_odom_topic: "/odom_with_cov"
+    lidar_odom_topic: "/ekf_loam/laser_odom_with_cov"
+    lidar_features_topic: "/ekf_loam/features_cloud_info"
+    filter_odom_topic: "/ekf_loam/filter_odom_to_init"
+    lidar_extrinsic_topic: "/lidar_extrinsic_pose"
+    imu_extrinsic_topic: "/imu_extrinsic_pose"
+    odom_frame_id: "chassis_init"
+    base_frame_id: "ekf_odom_frame"
+    lidar_frame_id: "lidar"
+    imu_frame_id: "imu"

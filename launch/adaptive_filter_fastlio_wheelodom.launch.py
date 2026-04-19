@@ -17,7 +17,7 @@ def generate_launch_description():
 
     node = Node(
         package='adaptive_odom_filter',
-        executable='adaptive_odom_filter_node',   # or EKFAdaptiveFilter if that’s your binary
+        executable='adaptive_odom_filter_node',
         name='adaptive_odom_filter',
         output='screen',
         parameters=[
@@ -28,7 +28,7 @@ def generate_launch_description():
                 'enableWheel': True,
                 'enableLidar': True,
                 'use_sim_time': False,
-                'freq': 50.0,
+                'freq': 20.0,
             }
         ],
         remappings=[

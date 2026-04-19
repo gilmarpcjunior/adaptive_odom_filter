@@ -50,7 +50,7 @@
 using namespace Eigen;
 using namespace std;
 
-class adaptive_odom_filter : public rclcpp::Node {
+class AdaptiveOdomFilterNode : public rclcpp::Node {
 
 private:
     // Subscribers
@@ -74,10 +74,6 @@ private:
 
     // Service client
     rclcpp::Client<rtabmap_msgs::srv::ResetPose>::SharedPtr srv_client_rgbd;
-
-    // TF (placeholder, not used directly here)
-    geometry_msgs::msg::TransformStamped filteredOdometryTrans;
-    std::unique_ptr<tf2_ros::TransformBroadcaster> tfBroadcasterfiltered;
 
     // filtered odom
     nav_msgs::msg::Odometry filteredOdometry;
@@ -122,6 +118,26 @@ private:
     Eigen::VectorXd X;
     Eigen::MatrixXd P;
 
+    Eigen::Matrix3d R_init;
+    rclcpp::Clock steady_clock_ {RCL_STEADY_TIME};
+
+    std::string imu_topic_ {"/imu/data"};
+    std::string wheel_odom_topic_ {"/odom_with_cov"};
+    std::string lidar_odom_topic_ {"/ekf_loam/laser_odom_with_cov"};
+    std::string tracking_odom_topic_ {"/tracking_odom"};
+    std::string depth_odom_topic_ {"/depth_odom"};
+    std::string left_camera_topic_ {"/left_camera"};
+    std::string right_camera_topic_ {"/right_camera"};
+    std::string color_camera_topic_ {"/camera_color"};
+    std::string filter_odom_topic_ {"/filter_odom"};
+    std::string rtabmap_service_topic_ {"/rtabmap/reset_odom_to_pose"};
+    std::string odom_frame_id_ {"chassis_init"};
+    std::string base_frame_id_ {"ekf_odom_frame"};
+
+    double steady_now() const {
+        return steady_clock_.now().seconds();
+    }
+
     // --- tiny helpers ---
     static builtin_interfaces::msg::Time toStampFromSec(double sec) {
         builtin_interfaces::msg::Time t;
@@ -149,8 +165,13 @@ public:
 
     float lidarG;
     float visualG;
-    float wheelG;
+    float wheelGVx;
+    float wheelGVy;
+    float wheelGWz;
+    float wheelOffset;
     float imuG;
+
+    int experiment;
 
     float gamma_vx;
     float gamma_omegaz;
@@ -169,11 +190,9 @@ public:
     std::string filterFreq;
 
     
-    adaptive_odom_filter() : rclcpp::Node("adaptive_odom_filter")
+    AdaptiveOdomFilterNode() : rclcpp::Node("adaptive_odom_filter")
     {
-  	// safe in constructor; does NOT use shared_from_this()
-  	tfBroadcasterfiltered = std::make_unique<tf2_ros::TransformBroadcaster>(this);
-  	initialization();
+        initialization();
     }
 
 
@@ -215,8 +234,12 @@ public:
         enableLidar = false;
         enableVisual = false;
 
-        wheelG = 0; // delete
+        wheelGVx = 0;
+        wheelGVy = 0;
+        wheelGWz = 0;
+        wheelOffset = 0;
         imuG = 0;
+        experiment = 0;
 
         // adaptive covariance - visual odometry
         averageIntensity1 = 0;
@@ -225,29 +248,30 @@ public:
 
         // measure
         imuMeasure.resize(9);
-        wheelMeasure.resize(2);
+        wheelMeasure.resize(3);
         lidarMeasure.resize(6);
         visualMeasure.resize(6);
 
         imuMeasure = Eigen::VectorXd::Zero(9);
-        wheelMeasure = Eigen::VectorXd::Zero(2);
+        wheelMeasure = Eigen::VectorXd::Zero(3);
         lidarMeasure = Eigen::VectorXd::Zero(6);
         visualMeasure = Eigen::VectorXd::Zero(6);
 
         E_imu.resize(9,9);
-        E_wheel.resize(2,2);
+        E_wheel.resize(3,3);
         E_lidar.resize(6,6);
         E_visual.resize(6,6);
 
         E_imu = Eigen::MatrixXd::Zero(9,9);
         E_lidar = Eigen::MatrixXd::Zero(6,6);
         E_visual = Eigen::MatrixXd::Zero(6,6);
-        E_wheel = Eigen::MatrixXd::Zero(2,2);
+        E_wheel = Eigen::MatrixXd::Zero(3,3);
 
         X.resize(12);
         P.resize(12,12);
         X = Eigen::VectorXd::Zero(12);
         P = Eigen::MatrixXd::Zero(12,12);
+        R_init = Eigen::Matrix3d::Identity();
     }
 
     void filter_initialization(){
@@ -262,7 +286,10 @@ public:
 
         filter.freq = freq;
         
-        filter.wheelG = wheelG;
+        filter.wheelGVx = wheelGVx;
+        filter.wheelGVy = wheelGVy;
+        filter.wheelGWz = wheelGWz;
+        filter.wheelOffset = wheelOffset;
         filter.imuG = imuG;
         filter.lidarG = lidarG;
         filter.visualG = visualG;
@@ -277,6 +304,7 @@ public:
 
         filter.minIntensity = minIntensity;
         filter.maxIntensity = maxIntensity;
+        filter.experiment = experiment;
 
         filter.lidar_type_func  = lidar_type_func; 
         filter.visual_type_func = visual_type_func;
@@ -288,31 +316,31 @@ public:
 
         // Subscribers
         subLaserOdometry = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/lidar_odom", 5, std::bind(&adaptive_odom_filter::laserOdometryHandler, this, _1));
+            lidar_odom_topic_, rclcpp::SensorDataQoS(), std::bind(&AdaptiveOdomFilterNode::laserOdometryHandler, this, _1));
         subWheelOdometry = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/odom", 5, std::bind(&adaptive_odom_filter::wheelOdometryHandler, this, _1));
+            wheel_odom_topic_, rclcpp::SensorDataQoS(), std::bind(&AdaptiveOdomFilterNode::wheelOdometryHandler, this, _1));
         subImu = this->create_subscription<sensor_msgs::msg::Imu>(
-            "/imu/data", 50, std::bind(&adaptive_odom_filter::imuHandler, this, _1));
+            imu_topic_, rclcpp::SensorDataQoS(), std::bind(&AdaptiveOdomFilterNode::imuHandler, this, _1));
 
         if (camera_type==1){
             subVisualOdometry = this->create_subscription<nav_msgs::msg::Odometry>(
-                "/tracking_odom", 5, std::bind(&adaptive_odom_filter::visualOdometryHandler, this, _1));
+                tracking_odom_topic_, rclcpp::SensorDataQoS(), std::bind(&AdaptiveOdomFilterNode::visualOdometryHandler, this, _1));
             subCamLeft  = this->create_subscription<sensor_msgs::msg::Image>(
-                "/left_camera", 5, std::bind(&adaptive_odom_filter::camLeftHandler, this, _1));
+                left_camera_topic_, rclcpp::SensorDataQoS(), std::bind(&AdaptiveOdomFilterNode::camLeftHandler, this, _1));
             subCamRight = this->create_subscription<sensor_msgs::msg::Image>(
-                "/rigth_camera", 5, std::bind(&adaptive_odom_filter::camRightHandler, this, _1));
+                right_camera_topic_, rclcpp::SensorDataQoS(), std::bind(&AdaptiveOdomFilterNode::camRightHandler, this, _1));
         }else if (camera_type==2){
             subVisualOdometryD = this->create_subscription<nav_msgs::msg::Odometry>(
-                "/depth_odom", 5, std::bind(&adaptive_odom_filter::visualOdometryDHandler, this, _1));
+                depth_odom_topic_, rclcpp::SensorDataQoS(), std::bind(&AdaptiveOdomFilterNode::visualOdometryDHandler, this, _1));
             subCamRgb = this->create_subscription<sensor_msgs::msg::Image>(
-                "/camera_color", 5, std::bind(&adaptive_odom_filter::camRgbHandler, this, _1));
+                color_camera_topic_, rclcpp::SensorDataQoS(), std::bind(&AdaptiveOdomFilterNode::camRgbHandler, this, _1));
         }
             
         // Publisher
-        pubFilteredOdometry = this->create_publisher<nav_msgs::msg::Odometry> ("/filter_odom", 5);
+        pubFilteredOdometry = this->create_publisher<nav_msgs::msg::Odometry> (filter_odom_topic_, 5);
 
         // Service client
-        srv_client_rgbd = this->create_client<rtabmap_msgs::srv::ResetPose>("/rtabmap/reset_odom_to_pose");
+        srv_client_rgbd = this->create_client<rtabmap_msgs::srv::ResetPose>(rtabmap_service_topic_);
     }
 
     //------------------
@@ -331,7 +359,7 @@ public:
     // callbacks
     //----------
     void imuHandler(const sensor_msgs::msg::Imu::ConstSharedPtr& imuIn){
-        double timeL = rclcpp::Clock(RCL_STEADY_TIME).now().seconds();
+        double timeL = steady_now();
 
         // time
         if (imuActivated){
@@ -372,7 +400,7 @@ public:
         imu_dt = 0.01;
 
         // header
-        double timediff = rclcpp::Clock(RCL_STEADY_TIME).now().seconds() - timeL + imuTimeCurrent;
+        double timediff = steady_now() - timeL + imuTimeCurrent;
         headerI = imuIn->header;
         headerI.stamp = toStampFromSec(timediff);
 
@@ -381,7 +409,7 @@ public:
     }
 
     void wheelOdometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr& wheelOdometry){
-        double timeL = rclcpp::Clock(RCL_STEADY_TIME).now().seconds();
+        double timeL = steady_now();
     
         // time
         if (wheelActivated){
@@ -396,25 +424,22 @@ public:
     
         wheel_dt = wheelTimeCurrent - wheelTimeLast;
     
-        // gate
-        const double MAX_VX = 3.0;   // m/s
-        const double MAX_WZ = 2.0;   // rad/s
-    
-        double vx = 1.0 * wheelOdometry->twist.twist.linear.x;
-        double wz =        wheelOdometry->twist.twist.angular.z;
-    
-        if (std::abs(vx) > MAX_VX || std::abs(wz) > MAX_WZ || wheel_dt <= 1e-4)
+        const double vx = -1.0 * wheelOdometry->twist.twist.linear.x;
+        const double vy = 0.0;
+        const double wz = wheelOdometry->twist.twist.angular.z;
+
+        if (wheel_dt <= 1e-4)
             return;
     
-        // measure
-        wheelMeasure << vx, wz;
+        wheelMeasure << vx, vy, wz;
     
-        // covariance
-        E_wheel(0,0) = wheelG * wheelOdometry->twist.covariance[0];
-        E_wheel(1,1) = 100.0 * wheelOdometry->twist.covariance[35];
+        E_wheel.setZero();
+        E_wheel(0,0) = wheelGVx > 0.0f ? wheelGVx : 0.1;
+        E_wheel(1,1) = wheelGVy > 0.0f ? wheelGVy : 0.01;
+        E_wheel(2,2) = wheelGWz > 0.0f ? wheelGWz : 0.2;
     
         // header
-        double timediff = rclcpp::Clock(RCL_STEADY_TIME).now().seconds() - timeL + wheelTimeCurrent;
+        double timediff = steady_now() - timeL + wheelTimeCurrent;
         headerW = wheelOdometry->header;
         headerW.stamp = toStampFromSec(timediff);
     
@@ -424,7 +449,7 @@ public:
     
     
     void laserOdometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr& laserOdometry){
-        double timeL = rclcpp::Clock(RCL_STEADY_TIME).now().seconds();
+        double timeL = steady_now();
     
         double stamp_sec = rclcpp::Time(laserOdometry->header.stamp).seconds();
     
@@ -474,21 +499,13 @@ public:
         last_pos        = curr_pos;
         have_last_lidar = true;
     
-        // covariance 6x6
-        int k = 0;
-        for (int i = 0; i < 6; ++i)
-            for (int j = 0; j < 6; ++j)
-                E_lidar(i,j) = laserOdometry->pose.covariance[k++];
-    
-        // orientação
-        double orient_gain = 1.0;
-        E_lidar.block<3,3>(3,3) *= orient_gain;
+        E_lidar = Eigen::MatrixXd::Constant(6, 6, 0.9);
     
         double corner = double(laserOdometry->twist.twist.linear.x);
         double surf   = double(laserOdometry->twist.twist.angular.x);
     
         // header
-        double timediff = rclcpp::Clock(RCL_STEADY_TIME).now().seconds() - timeL + lidarTimeCurrent;
+        double timediff = steady_now() - timeL + lidarTimeCurrent;
         headerL = laserOdometry->header;
         headerL.stamp = toStampFromSec(timediff);
     
@@ -500,7 +517,7 @@ public:
         
     void visualOdometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr& visualOdometry){
         if (camera_type == 1){ 
-            double timeV = rclcpp::Clock(RCL_STEADY_TIME).now().seconds();
+            double timeV = steady_now();
 
             if (visualActivated){
                 visualTimeLast = visualTimeCurrent;
@@ -535,7 +552,7 @@ public:
             visual_dt = visualTimeCurrent - visualTimeLast;
 
             // header
-            double timediff = rclcpp::Clock(RCL_STEADY_TIME).now().seconds() - timeV + visualTimeCurrent;
+            double timediff = steady_now() - timeV + visualTimeCurrent;
             headerV = visualOdometry->header;
             headerV.stamp = toStampFromSec(timediff);
             
@@ -573,12 +590,14 @@ public:
 
                 // call service (best-effort)
                 if (!srv_client_rgbd->service_is_ready()) {
-                    // optional: wait a short time
-                    (void)srv_client_rgbd->wait_for_service(std::chrono::milliseconds(100));
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(), *get_clock(), 5000,
+                        "ResetPose service is not ready; skipping request.");
+                    return;
                 }
                 (void)srv_client_rgbd->async_send_request(req);
             }else{
-                double timeV = rclcpp::Clock(RCL_STEADY_TIME).now().seconds();
+                double timeV = steady_now();
 
                 if (visualActivated){
                     visualTimeLast = visualTimeCurrent;
@@ -613,7 +632,7 @@ public:
                 visual_dt = visualTimeCurrent - visualTimeLast;
 
                 // header
-                double timediff = rclcpp::Clock(RCL_STEADY_TIME).now().seconds() - timeV + visualTimeCurrent;
+                double timediff = steady_now() - timeV + visualTimeCurrent;
                 headerV = visualOdometry->header;
                 headerV.stamp = toStampFromSec(timediff);
                 
@@ -712,8 +731,8 @@ public:
                     break;
             }
         
-        filteredOdometry.header.frame_id = "chassis_init";
-        filteredOdometry.child_frame_id = "ekf_odom_frame";
+        filteredOdometry.header.frame_id = odom_frame_id_;
+        filteredOdometry.child_frame_id = base_frame_id_;
 
         tf2::Quaternion q;
         q.setRPY (X(3), X(4), X(5));
@@ -768,7 +787,10 @@ public:
         this->declare_parameter<std::string>("filterFreq", std::string("l"));
         this->declare_parameter<double>("freq", 200.0);
 
-        this->declare_parameter<float>("wheelG", 0.05f);
+        this->declare_parameter<float>("wheelGVx", 0.001f);
+        this->declare_parameter<float>("wheelGVy", 1.0f);
+        this->declare_parameter<float>("wheelGWz", 40.0f);
+        this->declare_parameter<float>("wheelOffset", 1.0e-5f);
         this->declare_parameter<float>("imuG", 0.1f);
 
         this->declare_parameter<double>("alpha_lidar", 0.98);
@@ -788,8 +810,21 @@ public:
         this->declare_parameter<int>("lidar_type_func", 2);
         this->declare_parameter<int>("visual_type_func", 2);
         this->declare_parameter<int>("wheel_type_func", 1);
+        this->declare_parameter<int>("experiment", 0);
 
         this->declare_parameter<int>("camera_type", 0);
+        this->declare_parameter<std::string>("imu_topic", imu_topic_);
+        this->declare_parameter<std::string>("wheel_odom_topic", wheel_odom_topic_);
+        this->declare_parameter<std::string>("lidar_odom_topic", lidar_odom_topic_);
+        this->declare_parameter<std::string>("tracking_odom_topic", tracking_odom_topic_);
+        this->declare_parameter<std::string>("depth_odom_topic", depth_odom_topic_);
+        this->declare_parameter<std::string>("left_camera_topic", left_camera_topic_);
+        this->declare_parameter<std::string>("right_camera_topic", right_camera_topic_);
+        this->declare_parameter<std::string>("color_camera_topic", color_camera_topic_);
+        this->declare_parameter<std::string>("filter_odom_topic", filter_odom_topic_);
+        this->declare_parameter<std::string>("rtabmap_service_topic", rtabmap_service_topic_);
+        this->declare_parameter<std::string>("odom_frame_id", odom_frame_id_);
+        this->declare_parameter<std::string>("base_frame_id", base_frame_id_);
         
         // Get values
         enableFilter = this->get_parameter("enableFilter").as_bool();
@@ -801,8 +836,11 @@ public:
         filterFreq = this->get_parameter("filterFreq").as_string();
         freq       = this->get_parameter("freq").as_double();
 
-        wheelG = this->get_parameter("wheelG").as_double();
-        imuG   = this->get_parameter("imuG").as_double();
+        wheelGVx = this->get_parameter("wheelGVx").as_double();
+        wheelGVy = this->get_parameter("wheelGVy").as_double();
+        wheelGWz = this->get_parameter("wheelGWz").as_double();
+        wheelOffset = this->get_parameter("wheelOffset").as_double();
+        imuG = this->get_parameter("imuG").as_double();
 
         alpha_lidar  = this->get_parameter("alpha_lidar").as_double();
         alpha_visual = this->get_parameter("alpha_visual").as_double();
@@ -821,8 +859,21 @@ public:
         lidar_type_func  = this->get_parameter("lidar_type_func").as_int();
         visual_type_func = this->get_parameter("visual_type_func").as_int();
         wheel_type_func  = this->get_parameter("wheel_type_func").as_int();
+        experiment = this->get_parameter("experiment").as_int();
 
         camera_type = this->get_parameter("camera_type").as_int();
+        imu_topic_ = this->get_parameter("imu_topic").as_string();
+        wheel_odom_topic_ = this->get_parameter("wheel_odom_topic").as_string();
+        lidar_odom_topic_ = this->get_parameter("lidar_odom_topic").as_string();
+        tracking_odom_topic_ = this->get_parameter("tracking_odom_topic").as_string();
+        depth_odom_topic_ = this->get_parameter("depth_odom_topic").as_string();
+        left_camera_topic_ = this->get_parameter("left_camera_topic").as_string();
+        right_camera_topic_ = this->get_parameter("right_camera_topic").as_string();
+        color_camera_topic_ = this->get_parameter("color_camera_topic").as_string();
+        filter_odom_topic_ = this->get_parameter("filter_odom_topic").as_string();
+        rtabmap_service_topic_ = this->get_parameter("rtabmap_service_topic").as_string();
+        odom_frame_id_ = this->get_parameter("odom_frame_id").as_string();
+        base_frame_id_ = this->get_parameter("base_frame_id").as_string();
     }
 };
 
@@ -834,7 +885,7 @@ int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
 
-    auto node = std::make_shared<adaptive_odom_filter>();
+    auto node = std::make_shared<AdaptiveOdomFilterNode>();
 
     // Parameters init (ROS 2): loaded from YAML/CLI into the node
     try {
