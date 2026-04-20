@@ -1,5 +1,75 @@
 # Changelog
 
+## 2026-04-20
+
+### Computational analysis tooling
+
+Files changed:
+
+- `CMakeLists.txt`
+- `package.xml`
+- `scripts/computational_analysis.py`
+- `scripts/computational_analysis.md`
+- `CHANGELOG.md`
+
+Summary:
+
+- added a lightweight online computational monitor for the ROS 2 odometry pipeline
+- installed the new script as a package program under `lib/adaptive_odom_filter`
+- added runtime dependencies for `psutil` and `rosidl_runtime_py`
+- documented the tool in detail, including outputs, defaults, interpretation, and usage patterns
+
+What the new script does:
+
+- samples per-process CPU, memory, thread count, context-switch rate, and I/O throughput with low overhead
+- subscribes to the main ROS 2 topics and measures effective rate, inter-arrival jitter, maximum gaps, and message age from `header.stamp`
+- writes both raw sample CSVs and end-of-run summary CSVs so experimental sessions can be compared directly afterward
+- prints compact periodic summaries during the run instead of flooding the terminal
+
+Default monitored process labels:
+
+- `filter=adaptive_odom_filter|EKFAdaptiveFilter|EKFRobustAdaptiveFilter`
+- `fastlio=fastlio|fast_lio|ekf_loam`
+- `amcl=(^|/|\\s)amcl($|\\s)`
+
+Default monitored topic labels:
+
+- `wheel_odom=/odom_with_cov`
+- `imu=/imu/data`
+- `lidar_odom=/ekf_loam/laser_odom_with_cov`
+- `filter_odom=/ekf_loam/filter_odom_to_init`
+- `amcl_pose=/amcl_pose`
+
+Main outputs written per run:
+
+- `process_samples.csv`
+- `system_samples.csv`
+- `topic_samples.csv`
+- `process_summary.csv`
+- `system_summary.csv`
+- `topic_summary.csv`
+- `session_summary.json`
+
+Typical usage:
+
+- `python3 scripts/computational_analysis.py --duration 180 --sample-period 1.0 --summary-period 5.0`
+- use `--process label=regex` and `--topic label=/topic_name` to adapt the monitor to the exact runtime names used in each experiment
+- use `--output-dir` to tie each results folder to a single experimental condition or run identifier
+
+Validation performed on this branch:
+
+- `python3 -m py_compile scripts/computational_analysis.py`
+- `python3 scripts/computational_analysis.py --duration 2 --sample-period 0.5 --summary-period 1 --monitor-self --no-default-processes --no-default-topics --output-dir /tmp/adaptive_odom_filter_monitor_smoke`
+- started `python3 scripts/fake_odometry_path.py`
+- `python3 scripts/computational_analysis.py --duration 3 --sample-period 0.5 --summary-period 1 --monitor-self --process fake_publisher=fake_odometry_path.py --output-dir /tmp/adaptive_odom_filter_monitor_live`
+
+Observed behavior during validation:
+
+- the monitor produced the expected CSV and JSON outputs
+- topic discovery succeeded for the fake wheel odometry, LiDAR odometry, and IMU streams
+- live summaries reported process CPU/RSS plus online topic-rate and message-age statistics
+- the monitor shut down cleanly after the live test
+	
 ## 2026-04-18
 
 ### Commit `9470d1e`

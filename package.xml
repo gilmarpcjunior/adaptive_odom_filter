@@ -24,6 +24,8 @@
   <build_export_depend>eigen3_cmake_module</build_export_depend>
 
   <exec_depend>rclpy</exec_depend>
+  <exec_depend>rosidl_runtime_py</exec_depend>
+  <exec_depend>python3-psutil</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 
