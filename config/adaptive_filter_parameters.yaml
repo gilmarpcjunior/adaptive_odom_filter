@@ -11,7 +11,7 @@ adaptive_odom_filter:
     alpha_lidar: 0.99
     alpha_visual: 0.999
 
-    lidarG: 1.0
+    lidarG: 2.0
     wheelGVx: 0.001
     wheelGVy: 1.0
     wheelGWz: 40.0
