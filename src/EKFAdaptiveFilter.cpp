@@ -43,6 +43,7 @@
 // ------------------- STL / Eigen -------------------
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
+#include <cmath>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -361,6 +362,14 @@ public:
     void imuHandler(const sensor_msgs::msg::Imu::ConstSharedPtr& imuIn){
         double timeL = steady_now();
 
+        const auto& qmsg = imuIn->orientation;
+        tf2::Quaternion q(qmsg.x, qmsg.y, qmsg.z, qmsg.w);
+        tf2::Matrix3x3 m(q);
+        Eigen::Matrix3d R_curr, R_new;
+        R_curr << m[0][0], m[0][1], m[0][2],
+                  m[1][0], m[1][1], m[1][2],
+                  m[2][0], m[2][1], m[2][2];
+
         // time
         if (imuActivated){
             imuTimeLast = imuTimeCurrent;
@@ -369,13 +378,17 @@ public:
             imuTimeCurrent = rclcpp::Time(imuIn->header.stamp).seconds();
             imuTimeLast = imuTimeCurrent + 0.001;
             imuActivated = true;
+            R_init = R_curr;
         }       
 
         // roll, pitch and yaw 
         double roll, pitch, yaw;
-        const auto& qmsg = imuIn->orientation;
-        tf2::Quaternion q(qmsg.x, qmsg.y, qmsg.z, qmsg.w);
-        tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+        R_new = R_init.transpose()*R_curr;
+        tf2::Matrix3x3 m_temp(
+            R_new(0,0), R_new(0,1), R_new(0,2),
+            R_new(1,0), R_new(1,1), R_new(1,2),
+            R_new(2,0), R_new(2,1), R_new(2,2));
+        m_temp.getRPY(roll, pitch, yaw);
 
         // measure
         imuMeasure.block(0,0,3,1) << imuIn->linear_acceleration.x, imuIn->linear_acceleration.y, imuIn->linear_acceleration.z;
@@ -397,7 +410,6 @@ public:
 
         // time
         imu_dt = imuTimeCurrent - imuTimeLast;
-        imu_dt = 0.01;
 
         // header
         double timediff = steady_now() - timeL + imuTimeCurrent;
@@ -424,8 +436,8 @@ public:
     
         wheel_dt = wheelTimeCurrent - wheelTimeLast;
     
-        const double vx = -1.0 * wheelOdometry->twist.twist.linear.x;
-        const double vy = 0.0;
+        const double vx = -0.705 * wheelOdometry->twist.twist.linear.x;
+        const double vy = wheelOdometry->twist.twist.linear.y;
         const double wz = wheelOdometry->twist.twist.angular.z;
 
         if (wheel_dt <= 1e-4)
@@ -499,7 +511,27 @@ public:
         last_pos        = curr_pos;
         have_last_lidar = true;
     
-        E_lidar = Eigen::MatrixXd::Constant(6, 6, 0.9);
+        E_lidar.setZero();
+        bool has_pose_covariance = false;
+        for (int i = 0; i < 6; ++i) {
+            const double v = laserOdometry->pose.covariance[6*i + i];
+            has_pose_covariance = has_pose_covariance || (std::isfinite(v) && std::abs(v) > 0.0);
+        }
+
+        if (has_pose_covariance) {
+            for (int i = 0; i < 6; ++i) {
+                for (int j = 0; j < 6; ++j) {
+                    E_lidar(i,j) = laserOdometry->pose.covariance[6*i + j];
+                }
+            }
+        } else {
+            E_lidar(0,0) = laserOdometry->twist.covariance[0];
+            E_lidar(1,1) = laserOdometry->twist.covariance[7];
+            E_lidar(2,2) = 40.0*laserOdometry->twist.covariance[14] + 30.0;
+            E_lidar(3,3) = 40.0*laserOdometry->twist.covariance[21] + 30.0;
+            E_lidar(4,4) = 40.0*laserOdometry->twist.covariance[28] + 30.0;
+            E_lidar(5,5) = laserOdometry->twist.covariance[35];
+        }
     
         double corner = double(laserOdometry->twist.twist.linear.x);
         double surf   = double(laserOdometry->twist.twist.angular.x);

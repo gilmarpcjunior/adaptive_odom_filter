@@ -68,6 +68,9 @@ void AdaptiveOdomFilter::initialization(){
     _lidar_dt = 0.1;
     _visual_dt = 0.005;
 
+    _eps = 1e-9;
+    _epsR = 1e-4;
+
     freq = 200;
 
     // boolean
@@ -199,8 +202,8 @@ void AdaptiveOdomFilter::prediction_stage(double dt){
 //-----------------
 void AdaptiveOdomFilter::correction_wheel_stage(double dt){
     (void)dt;
-    Eigen::VectorXd Y(_N_WHEEL), hx(_N_WHEEL);
-    Eigen::MatrixXd H(_N_WHEEL,_N_STATES), K(_N_STATES,_N_WHEEL), E(_N_WHEEL,_N_WHEEL), S(_N_WHEEL,_N_WHEEL);
+    Eigen::VectorXd Y(_N_WHEEL), hx(_N_WHEEL), KY(_N_STATES);
+    Eigen::MatrixXd H(_N_WHEEL,_N_STATES), K(_N_STATES,_N_WHEEL), E(_N_WHEEL,_N_WHEEL), S(_N_WHEEL,_N_WHEEL), R(_N_WHEEL,_N_WHEEL);
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
     hx(0) = _X(6);
@@ -221,21 +224,28 @@ void AdaptiveOdomFilter::correction_wheel_stage(double dt){
     // Kalman's gain
     S = H*_P*H.transpose() + E;
     // K = _P*H.transpose()*S.inverse();
-    double eps = 1e-12; // ajuste conforme necessário
-    Eigen::MatrixXd S_reg = S + eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
+    Eigen::MatrixXd S_reg = S + _eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
     K = _P * H.transpose() * S_reg.completeOrthogonalDecomposition().pseudoInverse();
 
     // correction
-    _X = _X + K*(Y - hx);
+    KY = K*(Y - hx);
+    _X.block(0,0,3,1) = _X.block(0,0,3,1) + KY.block(0,0,3,1);
+    _X(3) = atan2(sin(_X(3) + KY(3)), cos(_X(3) + KY(3)));
+    _X(4) = atan2(sin(_X(4) + KY(4)), cos(_X(4) + KY(4)));
+    _X(5) = atan2(sin(_X(5) + KY(5)), cos(_X(5) + KY(5)));
+    _X.block(6,0,6,1) = _X.block(6,0,6,1) + KY.block(6,0,6,1);
+
     // _P = _P - K*H*_P;
-    _P = (I - K*H)*_P*(I - K*H).transpose(); // forma de Joseph - Evita perda de simetria / negativo-definiteness
+    R = _epsR*Eigen::MatrixXd::Identity(_N_WHEEL,_N_WHEEL);
+    _P = (I - K*H)*_P*(I - K*H).transpose() + K*R*K.transpose();
+    _P = 0.5 * (_P + _P.transpose());
 }
 
 void AdaptiveOdomFilter::correction_imu_stage(double dt){
     (void)dt;
     Eigen::Matrix3d S, E;
     Eigen::Vector3d Y, hx;
-    Eigen::MatrixXd H(3,_N_STATES), K(_N_STATES,3);
+    Eigen::MatrixXd H(3,_N_STATES), K(_N_STATES,3), R(3,3);
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
     // measure model
@@ -254,8 +264,7 @@ void AdaptiveOdomFilter::correction_imu_stage(double dt){
     // Kalman's gain
     S = H*_P*H.transpose() + E;
     // K = _P*H.transpose()*S.inverse();
-    double eps = 1e-12; // ajuste conforme necessário
-    Eigen::MatrixXd S_reg = S + eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
+    Eigen::MatrixXd S_reg = S + _eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
     K = _P * H.transpose() * S_reg.completeOrthogonalDecomposition().pseudoInverse();
 
     // correction - state
@@ -274,12 +283,14 @@ void AdaptiveOdomFilter::correction_imu_stage(double dt){
     // X = X + K*(Y - hx); 
     // correction - covariance
     // _P = _P - K*H*_P;
-    _P = (I - K*H)*_P*(I - K*H).transpose() + K * E * K.transpose(); // forma de Joseph
+    R = _epsR*Eigen::MatrixXd::Identity(3,3);
+    _P = (I - K*H)*_P*(I - K*H).transpose() + K*R*K.transpose();
+    _P = 0.5 * (_P + _P.transpose());
 }
 
 void AdaptiveOdomFilter::correction_lidar_stage(double dt){
-    Eigen::MatrixXd K(_N_STATES,_N_LIDAR), S(_N_LIDAR,_N_LIDAR), G(_N_LIDAR,_N_LIDAR), Gl(_N_LIDAR,_N_LIDAR), Q(_N_LIDAR,_N_LIDAR);
-    Eigen::VectorXd Y(_N_LIDAR), hx(_N_LIDAR);
+    Eigen::MatrixXd K(_N_STATES,_N_LIDAR), S(_N_LIDAR,_N_LIDAR), G(_N_LIDAR,_N_LIDAR), Gl(_N_LIDAR,_N_LIDAR), Q(_N_LIDAR,_N_LIDAR), R(_N_LIDAR,_N_LIDAR);
+    Eigen::VectorXd Y(_N_LIDAR), hx(_N_LIDAR), KY(_N_STATES);
     Eigen::MatrixXd H(_N_LIDAR,_N_STATES); 
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
@@ -306,14 +317,21 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
     // Kalman's gain
     S = H*_P*H.transpose() + Q;
     // K = _P*H.transpose()*S.inverse();
-    double eps = 1e-12; // ajuste conforme necessário
-    Eigen::MatrixXd S_reg = S + eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
+    Eigen::MatrixXd S_reg = S + _eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
     K = _P * H.transpose() * S_reg.completeOrthogonalDecomposition().pseudoInverse();
 
     // correction
-    _X = _X + K*(Y - hx);
+    KY = K*(Y - hx);
+    _X.block(0,0,3,1) = _X.block(0,0,3,1) + KY.block(0,0,3,1);
+    _X(3) = atan2(sin(_X(3) + KY(3)), cos(_X(3) + KY(3)));
+    _X(4) = atan2(sin(_X(4) + KY(4)), cos(_X(4) + KY(4)));
+    _X(5) = atan2(sin(_X(5) + KY(5)), cos(_X(5) + KY(5)));
+    _X.block(6,0,6,1) = _X.block(6,0,6,1) + KY.block(6,0,6,1);
+
     // _P = _P - K*H*_P;
-    _P = (I - K*H)*_P*(I - K*H).transpose() + K * Q * K.transpose(); // forma de Joseph
+    R = _epsR*Eigen::MatrixXd::Identity(_N_LIDAR,_N_LIDAR);
+    _P = (I - K*H)*_P*(I - K*H).transpose() + K*R*K.transpose();
+    _P = 0.5 * (_P + _P.transpose());
 
     // last measurement
     _lidarMeasureL = _lidarMeasure;
@@ -321,8 +339,8 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
 }
 
 void AdaptiveOdomFilter::correction_visual_stage(double dt){
-    Eigen::MatrixXd K(_N_STATES,_N_VISUAL), S(_N_VISUAL,_N_VISUAL), G(_N_VISUAL,_N_VISUAL), Gl(_N_VISUAL,_N_VISUAL), Q(_N_VISUAL,_N_VISUAL);
-    Eigen::VectorXd Y(_N_VISUAL), hx(_N_VISUAL);
+    Eigen::MatrixXd K(_N_STATES,_N_VISUAL), S(_N_VISUAL,_N_VISUAL), G(_N_VISUAL,_N_VISUAL), Gl(_N_VISUAL,_N_VISUAL), Q(_N_VISUAL,_N_VISUAL), R(_N_VISUAL,_N_VISUAL);
+    Eigen::VectorXd Y(_N_VISUAL), hx(_N_VISUAL), KY(_N_STATES);
     Eigen::MatrixXd H(_N_VISUAL,_N_STATES);
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
@@ -348,14 +366,21 @@ void AdaptiveOdomFilter::correction_visual_stage(double dt){
     // Kalman's gain
     S = H*_P*H.transpose() + Q;
     // K = _P*H.transpose()*S.inverse();
-    double eps = 1e-12; // ajuste conforme necessário
-    Eigen::MatrixXd S_reg = S + eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
+    Eigen::MatrixXd S_reg = S + _eps * Eigen::MatrixXd::Identity(S.rows(), S.cols());
     K = _P * H.transpose() * S_reg.completeOrthogonalDecomposition().pseudoInverse();
 
     // correction
-    _X = _X + K*(Y - hx);
+    KY = K*(Y - hx);
+    _X.block(0,0,3,1) = _X.block(0,0,3,1) + KY.block(0,0,3,1);
+    _X(3) = atan2(sin(_X(3) + KY(3)), cos(_X(3) + KY(3)));
+    _X(4) = atan2(sin(_X(4) + KY(4)), cos(_X(4) + KY(4)));
+    _X(5) = atan2(sin(_X(5) + KY(5)), cos(_X(5) + KY(5)));
+    _X.block(6,0,6,1) = _X.block(6,0,6,1) + KY.block(6,0,6,1);
+
     // _P = _P - K*H*_P;
-    _P = (I - K*H)*_P*(I - K*H).transpose(); // forma de Joseph
+    R = _epsR*Eigen::MatrixXd::Identity(_N_VISUAL,_N_VISUAL);
+    _P = (I - K*H)*_P*(I - K*H).transpose() + K*R*K.transpose();
+    _P = 0.5 * (_P + _P.transpose());
 
     // last measurement
     _visualMeasureL = _visualMeasure;
@@ -892,7 +917,6 @@ void AdaptiveOdomFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_l
     if (lidar_type_func==2){
         _E_lidar = lidarG*E_lidar;
     }else{
-        Eigen::MatrixXd E_lidar(6,6);
         _E_lidar = adaptive_covariance(corner, surf);                
     }
 
@@ -917,7 +941,6 @@ void AdaptiveOdomFilter::correction_visual_data(VectorXd visual_odom, MatrixXd E
     if (visual_type_func==2){
         _E_visual = E_visual;
     }else{
-        Eigen::MatrixXd E_visual(6,6);
         _E_visual = adaptive_visual_covariance(averageIntensity);
     }
 

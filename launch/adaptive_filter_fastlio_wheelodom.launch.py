@@ -29,6 +29,10 @@ def generate_launch_description():
                 'enableLidar': True,
                 'use_sim_time': False,
                 'freq': 20.0,
+                'imu_topic': LaunchConfiguration('imu'),
+                'lidar_odom_topic': LaunchConfiguration('lidar_odom'),
+                'wheel_odom_topic': LaunchConfiguration('wheel_odom'),
+                'filter_odom_topic': LaunchConfiguration('filter_odom_out'),
             }
         ],
         remappings=[
