@@ -84,6 +84,10 @@ void AdaptiveOdomFilter::initialization(){
     _visualNew = false;    
     _firstVisual =  true;
     _firstLidar = true;  
+    _lidarCovarianceIsTwist = false;
+    _lidarCovarianceIsTwistL = false;
+    _stateSequence = 0;
+    _lastUpdateModel = '\0';
 
     enableImu = false;
     enableWheel = false;
@@ -290,7 +294,7 @@ void AdaptiveOdomFilter::correction_imu_stage(double dt){
 
 void AdaptiveOdomFilter::correction_lidar_stage(double dt){
     Eigen::MatrixXd K(_N_STATES,_N_LIDAR), S(_N_LIDAR,_N_LIDAR), G(_N_LIDAR,_N_LIDAR), Gl(_N_LIDAR,_N_LIDAR), Q(_N_LIDAR,_N_LIDAR), R(_N_LIDAR,_N_LIDAR);
-    Eigen::VectorXd Y(_N_LIDAR), hx(_N_LIDAR), KY(_N_STATES);
+    Eigen::VectorXd Y(_N_LIDAR), Y_raw(_N_LIDAR), hx(_N_LIDAR), KY(_N_STATES);
     Eigen::MatrixXd H(_N_LIDAR,_N_STATES); 
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
@@ -300,19 +304,28 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
     if (_firstLidar){
         _lidarMeasureL = _lidarMeasure;
         _E_lidarL =_E_lidar;
+        _lidarCovarianceIsTwistL = _lidarCovarianceIsTwist;
         _firstLidar = false;
     }
-    Y = indirect_odometry_measurement(_lidarMeasure, _lidarMeasureL, dt, 'l');
+    Y_raw = indirect_odometry_measurement(_lidarMeasure, _lidarMeasureL, dt, 'l');
+    Y = _velocityLiDARFilter.update(Y_raw, dt);
 
     // Jacobian of hx with respect to the states
     H = Eigen::MatrixXd::Zero(_N_LIDAR,_N_STATES);
     H.block(0,6,6,6) = Eigen::MatrixXd::Identity(_N_LIDAR,_N_LIDAR);
 
-    // Error propagation
-    G = jacobian_odometry_measurement(_lidarMeasure, _lidarMeasureL, dt, 'l');
-    Gl = jacobian_odometry_measurementL(_lidarMeasure, _lidarMeasureL, dt, 'l');
-
-    Q = _E_lidar;
+    if (_lidarCovarianceIsTwist) {
+        Q = _E_lidar;
+    } else {
+        // Propagate pose covariance through the pose-delta velocity model.
+        G = jacobian_odometry_measurement(_lidarMeasure, _lidarMeasureL, dt, 'l');
+        Gl = jacobian_odometry_measurementL(_lidarMeasure, _lidarMeasureL, dt, 'l');
+        Q = G*_E_lidar*G.transpose();
+        if (!_lidarCovarianceIsTwistL) {
+            Q += Gl*_E_lidarL*Gl.transpose();
+        }
+    }
+    Q = 0.5 * (Q + Q.transpose());
 
     // Kalman's gain
     S = H*_P*H.transpose() + Q;
@@ -336,11 +349,12 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
     // last measurement
     _lidarMeasureL = _lidarMeasure;
     _E_lidarL = _E_lidar;
+    _lidarCovarianceIsTwistL = _lidarCovarianceIsTwist;
 }
 
 void AdaptiveOdomFilter::correction_visual_stage(double dt){
     Eigen::MatrixXd K(_N_STATES,_N_VISUAL), S(_N_VISUAL,_N_VISUAL), G(_N_VISUAL,_N_VISUAL), Gl(_N_VISUAL,_N_VISUAL), Q(_N_VISUAL,_N_VISUAL), R(_N_VISUAL,_N_VISUAL);
-    Eigen::VectorXd Y(_N_VISUAL), hx(_N_VISUAL), KY(_N_STATES);
+    Eigen::VectorXd Y(_N_VISUAL), Y_raw(_N_VISUAL), hx(_N_VISUAL), KY(_N_STATES);
     Eigen::MatrixXd H(_N_VISUAL,_N_STATES);
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
@@ -351,7 +365,8 @@ void AdaptiveOdomFilter::correction_visual_stage(double dt){
         _visualMeasureL = _visualMeasure;
         _firstVisual = false;
     }
-    Y = indirect_odometry_measurement(_visualMeasure, _visualMeasureL, dt, 'v');
+    Y_raw = indirect_odometry_measurement(_visualMeasure, _visualMeasureL, dt, 'v');
+    Y = _velocityVisualFilter.update(Y_raw, dt);
 
     // Jacobian of hx with respect to the states
     H = Eigen::MatrixXd::Zero(_N_VISUAL,_N_STATES);
@@ -390,7 +405,7 @@ void AdaptiveOdomFilter::correction_visual_stage(double dt){
 //---------
 // Models
 //---------
-VectorXd AdaptiveOdomFilter::f_prediction_model(VectorXd x, double dt){ 
+VectorXd AdaptiveOdomFilter::f_prediction_model(const VectorXd &x, double dt){
     // state: {x, y, z, roll, pitch, yaw, vx, vy, vz, wx, wy, wz}
     //        {         (world)         }{        (body)        }
     Eigen::Matrix3d R, Rx, Ry, Rz, J;
@@ -430,14 +445,16 @@ VectorXd AdaptiveOdomFilter::f_prediction_model(VectorXd x, double dt){
     return xp;
 }
 
-VectorXd AdaptiveOdomFilter::indirect_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type){
+VectorXd AdaptiveOdomFilter::indirect_odometry_measurement(const VectorXd &u, const VectorXd &ul, double dt, char type){
     Eigen::Matrix3d R, Rx, Ry, Rz, J;
     Eigen::VectorXd up, u_diff; 
     Eigen::MatrixXd A; 
+    int measure_dim = 0;
 
     // model
     switch (type){
         case 'l':
+            measure_dim = _N_LIDAR;
             up.resize(_N_LIDAR);
             u_diff.resize(_N_LIDAR);
             A.resize(_N_LIDAR,_N_LIDAR); 
@@ -445,6 +462,7 @@ VectorXd AdaptiveOdomFilter::indirect_odometry_measurement(VectorXd u, VectorXd 
 
             break;
         case 'v':
+            measure_dim = _N_VISUAL;
             up.resize(_N_VISUAL);
             u_diff.resize(_N_VISUAL);
             A.resize(_N_VISUAL,_N_VISUAL); 
@@ -453,7 +471,11 @@ VectorXd AdaptiveOdomFilter::indirect_odometry_measurement(VectorXd u, VectorXd 
             break;
         
         default:
-            break;
+            return Eigen::VectorXd();
+    }
+
+    if (dt <= _eps) {
+        return Eigen::VectorXd::Zero(measure_dim);
     }
 
     // Rotation matrix
@@ -492,26 +514,14 @@ VectorXd AdaptiveOdomFilter::indirect_odometry_measurement(VectorXd u, VectorXd 
 
     up = A * u_diff / dt;
 
-    Eigen::VectorXd filtered = up;
-    switch (type) {
-        case 'l':
-            filtered = _velocityLiDARFilter.update(up, dt);
-            break;
-        case 'v':
-            filtered = _velocityVisualFilter.update(up, dt);
-            break;
-        default:
-            break;
-    }
-
-    return filtered;
+    return up;
 
 }
 
 //----------
 // Jacobians
 //----------
-MatrixXd AdaptiveOdomFilter::jacobian_state(VectorXd x, double dt){
+MatrixXd AdaptiveOdomFilter::jacobian_state(const VectorXd &x, double dt){
     Eigen::MatrixXd J(_N_STATES,_N_STATES);
     Eigen::VectorXd f0(_N_STATES), f1(_N_STATES), x_plus(_N_STATES);
 
@@ -533,7 +543,7 @@ MatrixXd AdaptiveOdomFilter::jacobian_state(VectorXd x, double dt){
     return J;
 }
 
-MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type){
+MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurement(const VectorXd &u, const VectorXd &ul, double dt, char type){
     Eigen::MatrixXd J;
     Eigen::VectorXd f0(_N_LIDAR), f1(_N_LIDAR), u_plus(_N_LIDAR);
     double delta;
@@ -591,7 +601,7 @@ MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurement(VectorXd u, VectorXd 
     return J;
 }
 
-MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurementL(VectorXd u, VectorXd ul, double dt, char type){ 
+MatrixXd AdaptiveOdomFilter::jacobian_odometry_measurementL(const VectorXd &u, const VectorXd &ul, double dt, char type){
     Eigen::MatrixXd J;
     Eigen::VectorXd f0(_N_LIDAR), f1(_N_LIDAR), ul_plus(_N_LIDAR);
     double delta;
@@ -681,85 +691,107 @@ void AdaptiveOdomFilter::run(){
         dt_now = t_now - t_last;
         t_last = t_now;
 
-        if (imu_count >= _imu_dt * 1.2) {
-            imu_fail_msg = true;
-        }
-
-        if (_imuNew) {
-            imu_fail_msg = false;
-        }
-
-        if (wheel_count >= _wheel_dt * 1.2) {
-            wheel_fail_msg = true;
-        }
-
-        if (_wheelNew) {
-            wheel_fail_msg = false;
-        }
-
-        if (lidar_count >= _lidar_dt * 1.2) {
-            lidar_fail_msg = true;
-        }
-
-        if (_lidarNew) {
-            lidar_fail_msg = false;
-        }
-
-        if (visual_count >= _visual_dt * 1.2) {
-            visual_fail_msg = true;
-        }
-
-        if (_visualNew) {
-            visual_fail_msg = false;
-        }
-
-        if ((_imuActivated || _wheelActivated || _lidarActivated || _visualActivated) && !firstData) {
-            firstData = true;
-        }
-
-        if (((_imuActivated && enableImu) || (_wheelActivated && enableWheel) ||
-             (_lidarActivated && enableLidar) || (_visualActivated && enableVisual)) &&
-            (!((imu_fail_msg || !enableImu) && (wheel_fail_msg || !enableWheel) &&
-               (lidar_fail_msg || !enableLidar) && (visual_fail_msg || !enableVisual))) &&
-            firstData) {
-            prediction_stage(dt_now);
-        } else {
-            continue;
-        }
-
+        bool processed_cycle = false;
         {
+            char update_model = '\0';
             std::lock_guard<std::mutex> lock(_mutex);
-            //Correction IMU
-            if (enableImu && _imuActivated && _imuNew){
-                correction_imu_stage(_imu_dt);
-                _imuNew =  false;
+
+            if (imu_count >= _imu_dt * 1.2) {
+                imu_fail_msg = true;
+            }
+
+            if (_imuNew) {
                 imu_fail_msg = false;
-                imu_count = 0;
             }
 
-            // Correction wheel
-            if (enableWheel && _wheelActivated && _wheelNew){                
-                correction_wheel_stage(_wheel_dt);
-                _wheelNew =  false;
+            if (wheel_count >= _wheel_dt * 1.2) {
+                wheel_fail_msg = true;
+            }
+
+            if (_wheelNew) {
                 wheel_fail_msg = false;
-                wheel_count = 0;
             }
 
-            //Corection Visual
-            if (enableVisual && _visualActivated && _visualNew){                
-                correction_visual_stage(_visual_dt);
-                _visualNew =  false;
-                visual_fail_msg = false;
-                visual_count = 0;
+            if (lidar_count >= _lidar_dt * 1.2) {
+                lidar_fail_msg = true;
             }
 
-            //Corection LiDAR
-            if (enableLidar && _lidarActivated && _lidarNew){                
-                correction_lidar_stage(_lidar_dt);
-                _lidarNew =  false;
+            if (_lidarNew) {
                 lidar_fail_msg = false;
-                lidar_count = 0;
             }
+
+            if (visual_count >= _visual_dt * 1.2) {
+                visual_fail_msg = true;
+            }
+
+            if (_visualNew) {
+                visual_fail_msg = false;
+            }
+
+            if ((_imuActivated || _wheelActivated || _lidarActivated || _visualActivated) && !firstData) {
+                firstData = true;
+            }
+
+            processed_cycle =
+                ((_imuActivated && enableImu) || (_wheelActivated && enableWheel) ||
+                 (_lidarActivated && enableLidar) || (_visualActivated && enableVisual)) &&
+                (!((imu_fail_msg || !enableImu) && (wheel_fail_msg || !enableWheel) &&
+                   (lidar_fail_msg || !enableLidar) && (visual_fail_msg || !enableVisual))) &&
+                firstData;
+
+            if (!processed_cycle) {
+                // Nothing usable arrived yet; leave the previous published state untouched.
+            } else {
+                prediction_stage(dt_now);
+
+                //Correction IMU
+                if (enableImu && _imuActivated && _imuNew){
+                    correction_imu_stage(_imu_dt);
+                    _imuNew =  false;
+                    imu_fail_msg = false;
+                    imu_count = 0;
+                    update_model = 'i';
+                }
+
+                // Correction wheel
+                if (enableWheel && _wheelActivated && _wheelNew){
+                    correction_wheel_stage(_wheel_dt);
+                    _wheelNew =  false;
+                    wheel_fail_msg = false;
+                    wheel_count = 0;
+                    update_model = 'w';
+                }
+
+                //Corection Visual
+                if (enableVisual && _visualActivated && _visualNew){
+                    correction_visual_stage(_visual_dt);
+                    _visualNew =  false;
+                    visual_fail_msg = false;
+                    visual_count = 0;
+                    update_model = 'v';
+                }
+
+                //Corection LiDAR
+                if (enableLidar && _lidarActivated && _lidarNew){
+                    correction_lidar_stage(_lidar_dt);
+                    _lidarNew =  false;
+                    lidar_fail_msg = false;
+                    lidar_count = 0;
+                    update_model = 'l';
+                }
+
+                if (update_model != '\0') {
+                    _V = _X;
+                    _PV = _P;
+                    _lastUpdateModel = update_model;
+                    ++_stateSequence;
+                }
+            }
+        }
+
+        if (!processed_cycle) {
+            r.sleep();
+            continue;
         }
         
         // counters increment
@@ -767,10 +799,6 @@ void AdaptiveOdomFilter::run(){
         wheel_count += dt_now;
         lidar_count += dt_now;
         visual_count += dt_now;
-
-        // out data
-        _V = _X;
-        _PV = _P;
 
         // final marker 
         r.sleep();        
@@ -905,7 +933,7 @@ void AdaptiveOdomFilter::correction_wheel_data(VectorXd wheel_odom, MatrixXd E_w
     _wheelNew = true;
 }
 
-void AdaptiveOdomFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar, double dt, double corner, double surf){
+void AdaptiveOdomFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar, double dt, double corner, double surf, bool covariance_is_twist){
     std::lock_guard<std::mutex> lock(_mutex);
     // activation
     if (!_lidarActivated){
@@ -919,6 +947,7 @@ void AdaptiveOdomFilter::correction_lidar_data(VectorXd lidar_odom, MatrixXd E_l
     }else{
         _E_lidar = adaptive_covariance(corner, surf);                
     }
+    _lidarCovarianceIsTwist = covariance_is_twist && lidar_type_func==2;
 
     _lidar_dt = dt;
 
@@ -954,10 +983,17 @@ void AdaptiveOdomFilter::correction_visual_data(VectorXd visual_odom, MatrixXd E
 // filter control - verfica aqui
 // -----------------
 void AdaptiveOdomFilter::get_state(VectorXd &X_state, MatrixXd &E_state) {
+    char unused_model = '\0';
+    (void)get_state(X_state, E_state, unused_model);
+}
+
+uint64_t AdaptiveOdomFilter::get_state(VectorXd &X_state, MatrixXd &E_state, char &last_update_model) {
     std::lock_guard<std::mutex> lock(_mutex);
     // get the last state updated
-    X_state = _X;
-    E_state = _P;
+    X_state = _V;
+    E_state = _PV;
+    last_update_model = _lastUpdateModel;
+    return _stateSequence;
 }
 
 void AdaptiveOdomFilter::set_initial_state(VectorXd X_state, MatrixXd E_state){

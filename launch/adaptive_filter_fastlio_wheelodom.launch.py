@@ -27,7 +27,7 @@ def generate_launch_description():
                 'enableImu': True,
                 'enableWheel': True,
                 'enableLidar': True,
-                'use_sim_time': False,
+                'use_sim_time': True,
                 'freq': 20.0,
                 'imu_topic': LaunchConfiguration('imu'),
                 'lidar_odom_topic': LaunchConfiguration('lidar_odom'),

@@ -1,5 +1,54 @@
 # Changelog
 
+## 2026-05-12
+
+### ROS 2 adaptive EKF correction and bag-test tuning
+
+Files changed:
+
+- `include/adaptive_odom_filter/ekf_adaptive_tools.h`
+- `src/ekf_adaptive_tools.cpp`
+- `src/EKFAdaptiveFilter.cpp`
+- `config/adaptive_filter_parameters.yaml`
+- `launch/adaptive_filter_fastlio_wheelodom.launch.py`
+- `CHANGELOG.md`
+
+What changed:
+
+- I made the indirect odometry measurement model pure, so the numerical Jacobian code no longer mutates the alpha-beta filter state while it probes the model.
+- I kept alpha-beta smoothing in the LiDAR and visual correction path, but I now apply it exactly once for each real correction.
+- I made the LiDAR correction distinguish pose covariance from twist covariance. When Fast-LIO2 publishes pose covariance, the filter now propagates it through the pose-delta-to-body-velocity Jacobians; when the node falls back to twist covariance, the filter uses it directly.
+- I added covariance-mode bookkeeping for the current and previous LiDAR samples, so the propagated covariance uses a consistent interpretation for both sides of the finite-difference velocity estimate.
+- I added a corrected-state sequence number and last-update source to the EKF worker thread.
+- I moved filtered odometry publication out of the LiDAR callback and into a timer, so the ROS 2 node publishes only states that the filter thread has already predicted and corrected.
+- I protected output headers with a mutex, which keeps the timer publisher and sensor callbacks from racing on the selected header.
+- I changed `get_state()` to return the cached output state instead of reading the mutable internal EKF state directly.
+- I replaced the hard-coded wheel velocity conversion `-0.705 * /odom.twist.twist.linear.x` with the `wheelVxScale` parameter.
+- I set `wheelVxScale: 1.0`, so the default wheel `vx` path no longer flips or shrinks `/odom.twist.twist.linear.x`.
+- I relaxed `wheelGVx` from `0.001` to `0.1`, so wheel longitudinal velocity no longer dominates the LiDAR-derived velocity as aggressively after the LiDAR covariance fix.
+- I set `use_sim_time` to `true` in `adaptive_filter_fastlio_wheelodom.launch.py` for bag playback tests.
+
+Why it changed:
+
+- The previous Jacobian path updated the alpha-beta filter during finite-difference probes, which could corrupt the correction input before the EKF used it.
+- The previous LiDAR covariance path treated pose covariance too much like velocity covariance, which made LiDAR confidence inconsistent with the measurement model.
+- The previous callback publication path could publish a state before the worker thread finished the correction cycle.
+- The previous wheel `vx` sign and scale made the filtered position look mirrored while orientation still looked correct when `/odom` already used the expected forward convention.
+- The previous `wheelGVx` value trusted wheel forward velocity strongly enough to shrink the filtered lemniscate when wheel scale/sign disagreed with Fast-LIO2 or ground truth.
+
+Validation and test context:
+
+- I ran static source review and `git diff --check`.
+- I did not build or launch the package locally during the implementation phase because the test plan requested code-only changes.
+- Diogo tested the node with ROS 2 bag playback, including `ros2 launch adaptive_odom_filter adaptive_filter_fastlio_wheelodom.launch.py use_sim_time:=true`, and confirmed that the corrected path behaved well on bag data.
+- Diogo also tested the wheel sign/scale tuning with bag playback and reported that the mirrored position and smaller lemniscate behavior looked corrected.
+
+What to watch next:
+
+- Check `wheelVxScale` against each robot or bag source before using the filter on a different odometry convention.
+- Re-evaluate `wheelGVx`, `lidarG`, and the effective LiDAR velocity covariance on bag data before the next robot run.
+- Compare `/odom`, `/Odometry`, `/filter_odom`, and ground truth path scale in RViz after every gain change.
+
 ## 2026-04-20
 
 ### Computational analysis tooling

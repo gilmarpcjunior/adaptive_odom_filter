@@ -65,6 +65,10 @@ private:
     bool _firstVisual;
     bool _firstLidar;
     bool _computing;
+    bool _lidarCovarianceIsTwist;
+    bool _lidarCovarianceIsTwistL;
+    uint64_t _stateSequence;
+    char _lastUpdateModel;
 
     // variáveis de controle
     bool _running = false;
@@ -99,18 +103,18 @@ private:
     //---------
     // Models
     //---------
-    VectorXd f_prediction_model(VectorXd x, double dt);
+    VectorXd f_prediction_model(const VectorXd &x, double dt);
 
-    VectorXd indirect_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type);
+    VectorXd indirect_odometry_measurement(const VectorXd &u, const VectorXd &ul, double dt, char type);
 
     //----------
     // Jacobians
     //----------
-    MatrixXd jacobian_state(VectorXd x, double dt);
+    MatrixXd jacobian_state(const VectorXd &x, double dt);
 
-    MatrixXd jacobian_odometry_measurement(VectorXd u, VectorXd ul, double dt, char type);
+    MatrixXd jacobian_odometry_measurement(const VectorXd &u, const VectorXd &ul, double dt, char type);
 
-    MatrixXd jacobian_odometry_measurementL(VectorXd u, VectorXd ul, double dt, char type);
+    MatrixXd jacobian_odometry_measurementL(const VectorXd &u, const VectorXd &ul, double dt, char type);
 
     //----------------
     // run
@@ -184,7 +188,7 @@ public:
 
     void correction_wheel_data(VectorXd wheel_odom, MatrixXd E_wheel, double dt, double omegaz_imu);
 
-    void correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar, double dt, double corner, double surf);
+    void correction_lidar_data(VectorXd lidar_odom, MatrixXd E_lidar, double dt, double corner, double surf, bool covariance_is_twist = false);
 
     void correction_visual_data(VectorXd visual_odom, MatrixXd E_visual, double dt, double averageIntensity);
 
@@ -192,6 +196,8 @@ public:
     // filter control
     // -----------------
     void get_state(VectorXd &X_state, MatrixXd &E_state);
+
+    uint64_t get_state(VectorXd &X_state, MatrixXd &E_state, char &last_update_model);
 
     void set_initial_state(VectorXd X_state, MatrixXd E_state);
 

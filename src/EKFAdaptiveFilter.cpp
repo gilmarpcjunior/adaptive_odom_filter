@@ -43,10 +43,13 @@
 // ------------------- STL / Eigen -------------------
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <mutex>
 
 using namespace Eigen;
 using namespace std;
@@ -66,6 +69,7 @@ private:
 
     // Publisher
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubFilteredOdometry;
+    rclcpp::TimerBase::SharedPtr pubFilteredOdometryTimer;
 
     // Headers
     std_msgs::msg::Header headerI;
@@ -78,6 +82,7 @@ private:
 
     // filtered odom
     nav_msgs::msg::Odometry filteredOdometry;
+    std::mutex outputMutex;
 
     // Times
     double imuTimeLast;
@@ -118,6 +123,7 @@ private:
     // States and covariances
     Eigen::VectorXd X;
     Eigen::MatrixXd P;
+    uint64_t publishedStateSequence;
 
     Eigen::Matrix3d R_init;
     rclcpp::Clock steady_clock_ {RCL_STEADY_TIME};
@@ -170,6 +176,7 @@ public:
     float wheelGVy;
     float wheelGWz;
     float wheelOffset;
+    double wheelVxScale;
     float imuG;
 
     int experiment;
@@ -239,6 +246,7 @@ public:
         wheelGVy = 0;
         wheelGWz = 0;
         wheelOffset = 0;
+        wheelVxScale = 1.0;
         imuG = 0;
         experiment = 0;
 
@@ -272,6 +280,7 @@ public:
         P.resize(12,12);
         X = Eigen::VectorXd::Zero(12);
         P = Eigen::MatrixXd::Zero(12,12);
+        publishedStateSequence = 0;
         R_init = Eigen::Matrix3d::Identity();
     }
 
@@ -339,6 +348,11 @@ public:
             
         // Publisher
         pubFilteredOdometry = this->create_publisher<nav_msgs::msg::Odometry> (filter_odom_topic_, 5);
+        const double publish_hz = std::max(freq, 1.0);
+        const auto publish_period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::duration<double>(1.0 / publish_hz));
+        pubFilteredOdometryTimer = this->create_wall_timer(
+            publish_period, std::bind(&AdaptiveOdomFilterNode::publishFilteredState, this));
 
         // Service client
         srv_client_rgbd = this->create_client<rtabmap_msgs::srv::ResetPose>(rtabmap_service_topic_);
@@ -413,8 +427,11 @@ public:
 
         // header
         double timediff = steady_now() - timeL + imuTimeCurrent;
-        headerI = imuIn->header;
-        headerI.stamp = toStampFromSec(timediff);
+        {
+            std::lock_guard<std::mutex> lock(outputMutex);
+            headerI = imuIn->header;
+            headerI.stamp = toStampFromSec(timediff);
+        }
 
         // correction stage aqui
         filter.correction_imu_data(imuMeasure, E_imu, imu_dt);
@@ -436,7 +453,7 @@ public:
     
         wheel_dt = wheelTimeCurrent - wheelTimeLast;
     
-        const double vx = -0.705 * wheelOdometry->twist.twist.linear.x;
+        const double vx = wheelVxScale * wheelOdometry->twist.twist.linear.x;
         const double vy = wheelOdometry->twist.twist.linear.y;
         const double wz = wheelOdometry->twist.twist.angular.z;
 
@@ -452,8 +469,11 @@ public:
     
         // header
         double timediff = steady_now() - timeL + wheelTimeCurrent;
-        headerW = wheelOdometry->header;
-        headerW.stamp = toStampFromSec(timediff);
+        {
+            std::lock_guard<std::mutex> lock(outputMutex);
+            headerW = wheelOdometry->header;
+            headerW.stamp = toStampFromSec(timediff);
+        }
     
         // correction
         filter.correction_wheel_data(wheelMeasure, E_wheel, wheel_dt, imuMeasure(5));
@@ -538,13 +558,14 @@ public:
     
         // header
         double timediff = steady_now() - timeL + lidarTimeCurrent;
-        headerL = laserOdometry->header;
-        headerL.stamp = toStampFromSec(timediff);
+        {
+            std::lock_guard<std::mutex> lock(outputMutex);
+            headerL = laserOdometry->header;
+            headerL.stamp = toStampFromSec(timediff);
+        }
     
         // correction
-        filter.correction_lidar_data(lidarMeasure, E_lidar, lidar_dt, corner, surf);
-        filter.get_state(X, P);
-        publish_odom('l');
+        filter.correction_lidar_data(lidarMeasure, E_lidar, lidar_dt, corner, surf, !has_pose_covariance);
     }    
         
     void visualOdometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr& visualOdometry){
@@ -585,8 +606,11 @@ public:
 
             // header
             double timediff = steady_now() - timeV + visualTimeCurrent;
-            headerV = visualOdometry->header;
-            headerV.stamp = toStampFromSec(timediff);
+            {
+                std::lock_guard<std::mutex> lock(outputMutex);
+                headerV = visualOdometry->header;
+                headerV.stamp = toStampFromSec(timediff);
+            }
             
             // compute average intensity
             averageIntensity = (averageIntensity1 + averageIntensity2)/2.0;
@@ -665,8 +689,11 @@ public:
 
                 // header
                 double timediff = steady_now() - timeV + visualTimeCurrent;
-                headerV = visualOdometry->header;
-                headerV.stamp = toStampFromSec(timediff);
+                {
+                    std::lock_guard<std::mutex> lock(outputMutex);
+                    headerV = visualOdometry->header;
+                    headerV.stamp = toStampFromSec(timediff);
+                }
                 
                 //New measure
                 filter.correction_visual_data(visualMeasure, E_visual, visual_dt, averageIntensity);
@@ -747,7 +774,23 @@ public:
     //----------
     // publisher
     //----------
+    void publishFilteredState(){
+        if (!enableFilter || !pubFilteredOdometry) {
+            return;
+        }
+
+        char update_model = '\0';
+        const uint64_t state_sequence = filter.get_state(X, P, update_model);
+        if (state_sequence == 0 || state_sequence == publishedStateSequence || update_model == '\0') {
+            return;
+        }
+
+        publishedStateSequence = state_sequence;
+        publish_odom(update_model);
+    }
+
     void publish_odom(char model){
+        std::lock_guard<std::mutex> lock(outputMutex);
         switch(model){
                 case 'i':
                     filteredOdometry.header = headerI;
@@ -819,10 +862,11 @@ public:
         this->declare_parameter<std::string>("filterFreq", std::string("l"));
         this->declare_parameter<double>("freq", 200.0);
 
-        this->declare_parameter<float>("wheelGVx", 0.001f);
+        this->declare_parameter<float>("wheelGVx", 0.1f);
         this->declare_parameter<float>("wheelGVy", 1.0f);
         this->declare_parameter<float>("wheelGWz", 40.0f);
         this->declare_parameter<float>("wheelOffset", 1.0e-5f);
+        this->declare_parameter<double>("wheelVxScale", 1.0);
         this->declare_parameter<float>("imuG", 0.1f);
 
         this->declare_parameter<double>("alpha_lidar", 0.98);
@@ -872,6 +916,7 @@ public:
         wheelGVy = this->get_parameter("wheelGVy").as_double();
         wheelGWz = this->get_parameter("wheelGWz").as_double();
         wheelOffset = this->get_parameter("wheelOffset").as_double();
+        wheelVxScale = this->get_parameter("wheelVxScale").as_double();
         imuG = this->get_parameter("imuG").as_double();
 
         alpha_lidar  = this->get_parameter("alpha_lidar").as_double();
