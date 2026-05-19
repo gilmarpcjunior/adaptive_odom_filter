@@ -93,6 +93,7 @@ void AdaptiveOdomFilter::initialization(){
     enableWheel = false;
     enableLidar = false;
     enableVisual = false;
+    outputModelFilter = '\0';
 
     _computing = false;
 
@@ -207,7 +208,7 @@ void AdaptiveOdomFilter::prediction_stage(double dt){
 void AdaptiveOdomFilter::correction_wheel_stage(double dt){
     (void)dt;
     Eigen::VectorXd Y(_N_WHEEL), hx(_N_WHEEL), KY(_N_STATES);
-    Eigen::MatrixXd H(_N_WHEEL,_N_STATES), K(_N_STATES,_N_WHEEL), E(_N_WHEEL,_N_WHEEL), S(_N_WHEEL,_N_WHEEL), R(_N_WHEEL,_N_WHEEL);
+    Eigen::MatrixXd H(_N_WHEEL,_N_STATES), K(_N_STATES,_N_WHEEL), E(_N_WHEEL,_N_WHEEL), S(_N_WHEEL,_N_WHEEL);
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
     hx(0) = _X(6);
@@ -240,8 +241,7 @@ void AdaptiveOdomFilter::correction_wheel_stage(double dt){
     _X.block(6,0,6,1) = _X.block(6,0,6,1) + KY.block(6,0,6,1);
 
     // _P = _P - K*H*_P;
-    R = _epsR*Eigen::MatrixXd::Identity(_N_WHEEL,_N_WHEEL);
-    _P = (I - K*H)*_P*(I - K*H).transpose() + K*R*K.transpose();
+    _P = (I - K*H)*_P*(I - K*H).transpose() + K*E*K.transpose();
     _P = 0.5 * (_P + _P.transpose());
 }
 
@@ -249,7 +249,7 @@ void AdaptiveOdomFilter::correction_imu_stage(double dt){
     (void)dt;
     Eigen::Matrix3d S, E;
     Eigen::Vector3d Y, hx;
-    Eigen::MatrixXd H(3,_N_STATES), K(_N_STATES,3), R(3,3);
+    Eigen::MatrixXd H(3,_N_STATES), K(_N_STATES,3);
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
 
     // measure model
@@ -287,13 +287,12 @@ void AdaptiveOdomFilter::correction_imu_stage(double dt){
     // X = X + K*(Y - hx); 
     // correction - covariance
     // _P = _P - K*H*_P;
-    R = _epsR*Eigen::MatrixXd::Identity(3,3);
-    _P = (I - K*H)*_P*(I - K*H).transpose() + K*R*K.transpose();
+    _P = (I - K*H)*_P*(I - K*H).transpose() + K*E*K.transpose();
     _P = 0.5 * (_P + _P.transpose());
 }
 
 void AdaptiveOdomFilter::correction_lidar_stage(double dt){
-    Eigen::MatrixXd K(_N_STATES,_N_LIDAR), S(_N_LIDAR,_N_LIDAR), G(_N_LIDAR,_N_LIDAR), Gl(_N_LIDAR,_N_LIDAR), Q(_N_LIDAR,_N_LIDAR), R(_N_LIDAR,_N_LIDAR);
+    Eigen::MatrixXd K(_N_STATES,_N_LIDAR), S(_N_LIDAR,_N_LIDAR), G(_N_LIDAR,_N_LIDAR), Gl(_N_LIDAR,_N_LIDAR), Q(_N_LIDAR,_N_LIDAR);
     Eigen::VectorXd Y(_N_LIDAR), Y_raw(_N_LIDAR), hx(_N_LIDAR), KY(_N_STATES);
     Eigen::MatrixXd H(_N_LIDAR,_N_STATES); 
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
@@ -308,7 +307,7 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
         _firstLidar = false;
     }
     Y_raw = indirect_odometry_measurement(_lidarMeasure, _lidarMeasureL, dt, 'l');
-    Y = _velocityLiDARFilter.update(Y_raw, dt);
+    Y = Y_raw;
 
     // Jacobian of hx with respect to the states
     H = Eigen::MatrixXd::Zero(_N_LIDAR,_N_STATES);
@@ -342,8 +341,7 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
     _X.block(6,0,6,1) = _X.block(6,0,6,1) + KY.block(6,0,6,1);
 
     // _P = _P - K*H*_P;
-    R = _epsR*Eigen::MatrixXd::Identity(_N_LIDAR,_N_LIDAR);
-    _P = (I - K*H)*_P*(I - K*H).transpose() + K*R*K.transpose();
+    _P = (I - K*H)*_P*(I - K*H).transpose() + K*Q*K.transpose();
     _P = 0.5 * (_P + _P.transpose());
 
     // last measurement
@@ -353,7 +351,7 @@ void AdaptiveOdomFilter::correction_lidar_stage(double dt){
 }
 
 void AdaptiveOdomFilter::correction_visual_stage(double dt){
-    Eigen::MatrixXd K(_N_STATES,_N_VISUAL), S(_N_VISUAL,_N_VISUAL), G(_N_VISUAL,_N_VISUAL), Gl(_N_VISUAL,_N_VISUAL), Q(_N_VISUAL,_N_VISUAL), R(_N_VISUAL,_N_VISUAL);
+    Eigen::MatrixXd K(_N_STATES,_N_VISUAL), S(_N_VISUAL,_N_VISUAL), G(_N_VISUAL,_N_VISUAL), Gl(_N_VISUAL,_N_VISUAL), Q(_N_VISUAL,_N_VISUAL);
     Eigen::VectorXd Y(_N_VISUAL), Y_raw(_N_VISUAL), hx(_N_VISUAL), KY(_N_STATES);
     Eigen::MatrixXd H(_N_VISUAL,_N_STATES);
     Eigen::MatrixXd I = Eigen::MatrixXd::Identity(_N_STATES,_N_STATES);
@@ -393,8 +391,7 @@ void AdaptiveOdomFilter::correction_visual_stage(double dt){
     _X.block(6,0,6,1) = _X.block(6,0,6,1) + KY.block(6,0,6,1);
 
     // _P = _P - K*H*_P;
-    R = _epsR*Eigen::MatrixXd::Identity(_N_VISUAL,_N_VISUAL);
-    _P = (I - K*H)*_P*(I - K*H).transpose() + K*R*K.transpose();
+    _P = (I - K*H)*_P*(I - K*H).transpose() + K*Q*K.transpose();
     _P = 0.5 * (_P + _P.transpose());
 
     // last measurement
@@ -780,7 +777,8 @@ void AdaptiveOdomFilter::run(){
                     update_model = 'l';
                 }
 
-                if (update_model != '\0') {
+                if (update_model != '\0' &&
+                    (outputModelFilter == '\0' || update_model == outputModelFilter)) {
                     _V = _X;
                     _PV = _P;
                     _lastUpdateModel = update_model;

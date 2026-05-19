@@ -174,6 +174,7 @@ public:
 
     double minIntensity; 
     double maxIntensity; 
+    char outputModelFilter;
 
     //------------------
     // Constructor -  Destructor

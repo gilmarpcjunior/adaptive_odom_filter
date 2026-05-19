@@ -67,6 +67,7 @@ ament_target_dependencies(EKFRobustAdaptiveFilter ${adaptive_odom_filter_depende
 install(PROGRAMS
   scripts/fake_odometry_path.py
   scripts/computational_analysis.py
+  optimization/bayesian_filter_optimizer.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -293,6 +293,10 @@ public:
         filter.lidar_type_func = lidar_type_func;
         filter.visual_type_func = visual_type_func;
         filter.wheel_type_func = wheel_type_func;
+        filter.outputModelFilter = '\0';
+        if (!filterFreq.empty() && filterFreq != "all") {
+            filter.outputModelFilter = filterFreq.front();
+        }
 
         filter.freq = freq;
         

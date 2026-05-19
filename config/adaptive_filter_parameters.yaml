@@ -1,24 +1,33 @@
 adaptive_odom_filter:
   ros__parameters:
     enableFilter: true
-    enableImu: true
-    enableWheel: true
+    enableImu: false
+    enableWheel: false
     enableLidar: true
     enableVisual: false
     filterFreq: "l"
     freq: 20.0
 
-    alpha_lidar: 0.99
+    # alpha_lidar: 0.99
     alpha_visual: 0.999
 
-    lidarG: 2.0
+    lidarG: 0.5
     wheelGVx: 0.1
     wheelGVy: 1.0
     wheelGWz: 40.0
     wheelOffset: 1.0e-5
+    alpha_lidar: 1.0
     wheelVxScale: 1.0
-    visualG: 0.1
-    imuG: 1.0
+
+
+    # lidarG: 2.0
+    # wheelGVx: 0.1
+    # wheelGVy: 1.0
+    # wheelGWz: 40.0
+    # wheelOffset: 1.0e-5
+    # wheelVxScale: 1.0
+    # visualG: 0.1
+    # imuG: 1.0
 
     gamma_vx: 0.05
     gamma_omegaz: 0.01
@@ -30,7 +39,7 @@ adaptive_odom_filter:
 
     lidar_type_func: 2
     visual_type_func: 2
-    wheel_type_func: 1
+    wheel_type_func: 0
     experiment: 0
 
     camera_type: 1
